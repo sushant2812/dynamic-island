@@ -184,6 +184,7 @@ final class ChromeNowPlayingProvider {
 final class NowPlayingService: ObservableObject {
     @Published private(set) var session: AudioSession? = nil
     @Published private(set) var artworkImage: NSImage? = nil
+    @Published private(set) var waveformAccentColor: NSColor? = nil
 
     private let spotify = SpotifyNowPlayingProvider()
     private let chrome = ChromeNowPlayingProvider()
@@ -202,6 +203,7 @@ final class NowPlayingService: ObservableObject {
                 } else {
                     self.currentArtworkURL = nil
                     self.artworkImage = nil
+                    self.waveformAccentColor = nil
                 }
             }
         }
@@ -231,6 +233,7 @@ final class NowPlayingService: ObservableObject {
         guard session.source == .spotify, let url = session.artworkURL else {
             currentArtworkURL = nil
             artworkImage = nil
+            waveformAccentColor = nil
             return
         }
         guard currentArtworkURL != url else { return }
@@ -244,11 +247,85 @@ final class NowPlayingService: ObservableObject {
                 let (data, _) = try await URLSession.shared.data(from: urlCopy)
                 // Avoid setting an outdated image after rapid track changes.
                 guard self.currentArtworkURL == urlCopy else { return }
-                self.artworkImage = NSImage(data: data)
+                let image = NSImage(data: data)
+                self.artworkImage = image
+                self.waveformAccentColor = image.map(self.averageAccentColor(from:))
             } catch {
                 // Keep existing UI fallback on failures.
             }
         }
+    }
+
+    private func averageAccentColor(from image: NSImage) -> NSColor {
+        guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+            return .white
+        }
+
+        // Downsample for speed.
+        let targetW: Int = 32
+        let targetH: Int = 32
+        let width = targetW
+        let height = targetH
+
+        let bytesPerRow = width * 4
+        let bitsPerComponent = 8
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let bitmapInfo = CGImageAlphaInfo.premultipliedLast.rawValue
+
+        guard let ctx = CGContext(
+            data: nil,
+            width: width,
+            height: height,
+            bitsPerComponent: bitsPerComponent,
+            bytesPerRow: bytesPerRow,
+            space: colorSpace,
+            bitmapInfo: bitmapInfo
+        ) else {
+            return .white
+        }
+
+        // Draw with aspect-fit.
+        let rect = CGRect(x: 0, y: 0, width: width, height: height)
+        ctx.clear(rect)
+        ctx.draw(cgImage, in: rect)
+
+        guard let data = ctx.data else {
+            return .white
+        }
+
+        let ptr = data.assumingMemoryBound(to: UInt8.self)
+        var rTotal: Double = 0
+        var gTotal: Double = 0
+        var bTotal: Double = 0
+        var count: Double = 0
+
+        // Sample every pixel; the image is tiny (32x32).
+        for i in 0..<(width * height) {
+            let offset = i * 4
+            let r = Double(ptr[offset + 0])
+            let g = Double(ptr[offset + 1])
+            let b = Double(ptr[offset + 2])
+            let a = Double(ptr[offset + 3]) / 255.0
+
+            guard a > 0.1 else { continue }
+
+            // Ignore near-black pixels to avoid returning black for dark covers.
+            let brightness = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255.0
+            guard brightness > 0.05 else { continue }
+
+            rTotal += r
+            gTotal += g
+            bTotal += b
+            count += 1
+        }
+
+        guard count > 0 else { return .white }
+        return NSColor(
+            red: CGFloat(rTotal / count / 255.0),
+            green: CGFloat(gTotal / count / 255.0),
+            blue: CGFloat(bTotal / count / 255.0),
+            alpha: 1.0
+        )
     }
 }
 
@@ -258,7 +335,8 @@ final class IslandState: ObservableObject {
 
 struct SoundVisualizerView: View {
     let isPlaying: Bool
-    private let barCount = 24
+    let baseColor: Color
+    private let barCount = 10
 
     private func fract(_ x: Double) -> Double { x - floor(x) }
 
@@ -281,31 +359,34 @@ struct SoundVisualizerView: View {
                 let intensity: CGFloat = isPlaying ? 1.0 : 0.25
                 let frame = floor(t * 38) // controls spike update rate
 
-                HStack(alignment: .bottom, spacing: spacing) {
-                    ForEach(0..<barCount, id: \.self) { i in
-                        let seed = Double(i) * 13.13 + frame * 0.19
-                        let r = fract(sin(seed) * 43758.5453)
+                ZStack(alignment: .trailing) {
+                    // Bars grow around a fixed vertical center (no bottom pivot).
+                    HStack(alignment: .center, spacing: spacing) {
+                        ForEach(0..<barCount, id: \.self) { i in
+                            let seed = Double(i) * 13.13 + frame * 0.19
+                            let r = fract(sin(seed) * 43758.5453)
 
-                        let threshold = 0.70
-                        let exponent = 10.0
-                        let spike = max(0, r - threshold)
-                        let spikeNorm = pow(spike / (1.0 - threshold), exponent)
+                            let threshold = 0.70
+                            let exponent = 10.0
+                            let spike = max(0, r - threshold)
+                            let spikeNorm = pow(spike / (1.0 - threshold), exponent)
 
-                        let decaySeed = Double(i) * 7.77 + frame * 0.37
-                        let r2 = fract(sin(decaySeed) * 961.73)
-                        let decayPulse = pow(r2, 2.0)
+                            let decaySeed = Double(i) * 7.77 + frame * 0.37
+                            let r2 = fract(sin(decaySeed) * 961.73)
+                            let decayPulse = pow(r2, 2.0)
 
-                        let mix = min(1.0, 0.18 * decayPulse + 0.82 * spikeNorm)
-                        let height = maxBarHeight * (0.10 + 0.90 * mix) * intensity
+                            let mix = min(1.0, 0.18 * decayPulse + 0.82 * spikeNorm)
+                            let height = maxBarHeight * (0.10 + 0.90 * mix) * intensity
 
-                        RoundedRectangle(cornerRadius: max(1, barWidth * 0.2), style: .continuous)
-                            .fill(Color.white.opacity(isPlaying ? 0.98 : 0.35))
-                            .frame(width: barWidth, height: height)
+                            RoundedRectangle(cornerRadius: max(1, barWidth * 0.2), style: .continuous)
+                                .fill(baseColor.opacity(isPlaying ? 0.98 : 0.35))
+                                .frame(width: barWidth, height: height)
+                        }
                     }
+                    // Hard constrain bars to the emitWidth so the left half stays empty.
+                    .frame(width: emitWidth, alignment: .trailing)
                 }
-                // Keep the bars baseline locked to the bottom and aligned right,
-                // and ensure the left half stays empty.
-                .frame(width: width, height: geo.size.height, alignment: .bottomTrailing)
+                .frame(width: width, height: geo.size.height, alignment: .trailing)
             }
         }
         .clipped()
@@ -427,7 +508,10 @@ struct IslandView: View {
                         Spacer(minLength: 0)
 
                         // Right: soundwaves indicator
-                        SoundVisualizerView(isPlaying: nowPlaying.session?.playback == .playing)
+                        SoundVisualizerView(
+                            isPlaying: nowPlaying.session?.playback == .playing,
+                            baseColor: Color(nsColor: nowPlaying.waveformAccentColor ?? .white)
+                        )
                             .frame(width: 70, height: 16, alignment: .trailing)
                     }
                     .padding(.horizontal, 12)
@@ -555,7 +639,7 @@ final class IslandPanelController {
         let x = frame.minX + (frame.width - size.width) / 2
         // Nudge down only while expanded so it sits below the menu-bar/notch region.
         // Expanded sits much lower; collapsed pill should clear the notch a bit. Change 40 to 0 when fixed it
-        let yNudge: CGFloat = isExpanded ? 50 : 5
+        let yNudge: CGFloat = isExpanded ? 50 : 0
         let y = frame.maxY - size.height - yNudge
         panel.setFrameOrigin(NSPoint(x: round(x), y: round(y)))
     }
