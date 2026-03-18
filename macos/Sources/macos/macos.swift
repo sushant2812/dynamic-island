@@ -333,6 +333,72 @@ final class IslandState: ObservableObject {
     @Published var expanded: Bool = false
 }
 
+struct InternalNotification: Identifiable, Equatable {
+    let id = UUID()
+    var title: String
+    var message: String?
+    var createdAt: Date = Date()
+    var ttl: TimeInterval
+}
+
+@MainActor
+final class NotificationsStore: ObservableObject {
+    @Published private(set) var notifications: [InternalNotification] = []
+
+    func push(title: String, message: String? = nil, ttl: TimeInterval = 3.5) {
+        let item = InternalNotification(title: title, message: message, ttl: ttl)
+        withAnimation(.spring(response: 0.22, dampingFraction: 0.85)) {
+            notifications.insert(item, at: 0)
+        }
+
+        let id = item.id
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: UInt64(ttl * 1_000_000_000))
+            notifications.removeAll { $0.id == id }
+        }
+    }
+}
+
+struct NotificationToastView: View {
+    let item: InternalNotification
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(item.title)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.92))
+            if let message = item.message, !message.isEmpty {
+                Text(message)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.white.opacity(0.65))
+            }
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color.black.opacity(0.78))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color.white.opacity(0.06), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.25), radius: 16, y: 10)
+    }
+}
+
+struct NotificationsStackView: View {
+    @ObservedObject var store: NotificationsStore
+
+    var body: some View {
+        VStack(spacing: 8) {
+            ForEach(store.notifications) { item in
+                NotificationToastView(item: item)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+    }
+}
+
 struct SoundVisualizerView: View {
     let isPlaying: Bool
     let baseColor: Color
@@ -396,76 +462,82 @@ struct SoundVisualizerView: View {
 struct IslandView: View {
     @ObservedObject var nowPlaying: NowPlayingService
     @ObservedObject var islandState: IslandState
+    @ObservedObject var notifications: NotificationsStore
     @Namespace private var pillNamespace
 
     var body: some View {
         VStack(spacing: 10) {
             if islandState.expanded {
-                HStack(alignment: .center, spacing: 10) {
-                    if let img = nowPlaying.artworkImage {
-                        Image(nsImage: img)
-                            .resizable()
-                            .scaledToFill()
-                            .frame(width: 40, height: 40)
-                            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                            .shadow(color: .black.opacity(0.25), radius: 8, y: 4)
-                    } else {
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .fill(Color.white.opacity(0.06))
-                            .frame(width: 40, height: 40)
-                    }
+                VStack(spacing: 8) {
+                    NotificationsStackView(store: notifications)
+                        .padding(.horizontal, 12)
 
-                    Text(condensedNowPlayingLine)
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.92))
-                        .lineLimit(1)
+                    HStack(alignment: .center, spacing: 10) {
+                        if let img = nowPlaying.artworkImage {
+                            Image(nsImage: img)
+                                .resizable()
+                                .scaledToFill()
+                                .frame(width: 40, height: 40)
+                                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                                .shadow(color: .black.opacity(0.25), radius: 8, y: 4)
+                        } else {
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .fill(Color.white.opacity(0.06))
+                                .frame(width: 40, height: 40)
+                        }
 
-                    Spacer(minLength: 0)
+                        Text(condensedNowPlayingLine)
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(.white.opacity(0.92))
+                            .lineLimit(1)
 
-                    let canUseSpotifyControls = (nowPlaying.session?.source == .spotify)
+                        Spacer(minLength: 0)
 
-                    if canUseSpotifyControls {
-                        HStack(spacing: 8) {
-                            Button {
-                                nowPlaying.previousTrackIfSupported()
-                            } label: {
-                                Image(systemName: "backward.end.fill")
-                                    .font(.system(size: 16, weight: .semibold))
-                                    .foregroundStyle(.white.opacity(0.92))
+                        let canUseSpotifyControls = (nowPlaying.session?.source == .spotify)
+
+                        if canUseSpotifyControls {
+                            HStack(spacing: 8) {
+                                Button {
+                                    nowPlaying.previousTrackIfSupported()
+                                } label: {
+                                    Image(systemName: "backward.end.fill")
+                                        .font(.system(size: 16, weight: .semibold))
+                                        .foregroundStyle(.white.opacity(0.92))
+                                }
+                                .frame(width: 30, height: 30)
+                                .background(Color.white.opacity(0.08))
+                                .clipShape(Capsule())
+                                .disabled(false)
+
+                                Button {
+                                    nowPlaying.togglePlayPauseIfSupported()
+                                } label: {
+                                    Image(systemName: (nowPlaying.session?.playback == .playing) ? "pause.fill" : "play.fill")
+                                        .font(.system(size: 16, weight: .semibold))
+                                        .foregroundStyle(.white.opacity(0.92))
+                                }
+                                .frame(width: 36, height: 30)
+                                .background(Color.white.opacity(0.10))
+                                .clipShape(Capsule())
+                                .disabled(!(nowPlaying.session?.canPlayPause ?? false))
+
+                                Button {
+                                    nowPlaying.nextTrackIfSupported()
+                                } label: {
+                                    Image(systemName: "forward.end.fill")
+                                        .font(.system(size: 16, weight: .semibold))
+                                        .foregroundStyle(.white.opacity(0.92))
+                                }
+                                .frame(width: 30, height: 30)
+                                .background(Color.white.opacity(0.08))
+                                .clipShape(Capsule())
+                                .disabled(false)
                             }
-                            .frame(width: 30, height: 30)
-                            .background(Color.white.opacity(0.08))
-                            .clipShape(Capsule())
-                            .disabled(false)
-
-                            Button {
-                                nowPlaying.togglePlayPauseIfSupported()
-                            } label: {
-                                Image(systemName: (nowPlaying.session?.playback == .playing) ? "pause.fill" : "play.fill")
-                                    .font(.system(size: 16, weight: .semibold))
-                                    .foregroundStyle(.white.opacity(0.92))
-                            }
-                            .frame(width: 36, height: 30)
-                            .background(Color.white.opacity(0.10))
-                            .clipShape(Capsule())
-                            .disabled(!(nowPlaying.session?.canPlayPause ?? false))
-
-                            Button {
-                                nowPlaying.nextTrackIfSupported()
-                            } label: {
-                                Image(systemName: "forward.end.fill")
-                                    .font(.system(size: 16, weight: .semibold))
-                                    .foregroundStyle(.white.opacity(0.92))
-                            }
-                            .frame(width: 30, height: 30)
-                            .background(Color.white.opacity(0.08))
-                            .clipShape(Capsule())
-                            .disabled(false)
                         }
                     }
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 8)
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
                 .frame(width: 520, alignment: .leading)
                 .background(
                     RoundedRectangle(cornerRadius: 16, style: .continuous)
@@ -624,10 +696,10 @@ final class IslandPanelController {
         // Keep the window as small as possible so it doesn't block clicks in other apps,
         // while animating the size/position for a smoother pill <-> expanded transition.
         isExpanded = expanded
-        hosting.hitTestBandHeight = expanded ? 96 : 72
+        hosting.hitTestBandHeight = expanded ? 160 : 72
 
         let targetSize = expanded
-        ? NSSize(width: 520, height: 72)
+        ? NSSize(width: 520, height: 120)
         : NSSize(width: 380, height: 56)
 
         let nextFrame = topCenterFrame(size: targetSize, expanded: expanded)
@@ -670,6 +742,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let nowPlaying = NowPlayingService()
     private var panelController: IslandPanelController?
     private let islandState = IslandState()
+    private let notifications = NotificationsStore()
     private var clickThroughEnabled = false
     private var clickThroughMenuItem: NSMenuItem?
     private var mouseDownMonitor: Any?
@@ -683,7 +756,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panelController = controller
         controller.setExpanded(false)
 
-        controller.setRootView(IslandView(nowPlaying: nowPlaying, islandState: islandState))
+        controller.setRootView(IslandView(nowPlaying: nowPlaying, islandState: islandState, notifications: notifications))
         controller.show()
 
         // Resize the NSPanel when SwiftUI state changes.
