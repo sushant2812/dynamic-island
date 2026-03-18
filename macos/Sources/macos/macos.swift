@@ -40,6 +40,24 @@ final class AppleScriptRunner {
     }
 }
 
+final class PassthroughHostingView<Content: View>: NSHostingView<Content> {
+    // Only allow hits in a horizontal band around the top (where the pill/panel live),
+    // so clicks outside that band go through to underlying apps like Chrome.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let bandHeight: CGFloat = 72
+        let bandRect = NSRect(
+            x: bounds.minX,
+            y: bounds.maxY - bandHeight,
+            width: bounds.width,
+            height: bandHeight
+        )
+        guard bandRect.contains(point) else {
+            return nil
+        }
+        return super.hitTest(point)
+    }
+}
+
 final class SpotifyNowPlayingProvider {
     private let runner = AppleScriptRunner()
 
@@ -148,6 +166,7 @@ final class NowPlayingService: ObservableObject {
 struct IslandView: View {
     @ObservedObject var nowPlaying: NowPlayingService
     @State private var expanded = false
+    var onExpandedChanged: (Bool) -> Void = { _ in }
 
     var body: some View {
         VStack(spacing: 10) {
@@ -156,6 +175,7 @@ struct IslandView: View {
                     nowPlaying.togglePlayPauseIfSupported()
                 } else {
                     expanded.toggle()
+                    onExpandedChanged(expanded)
                 }
             } label: {
                 HStack(spacing: 10) {
@@ -237,13 +257,15 @@ struct IslandView: View {
 @MainActor
 final class IslandPanelController {
     private let panel: NSPanel
+    private var isClickThroughEnabled = false
+    private let hosting: PassthroughHostingView<AnyView>
 
     init(rootView: some View) {
-        let hosting = NSHostingView(rootView: rootView)
+        hosting = PassthroughHostingView(rootView: AnyView(rootView))
         hosting.layer?.backgroundColor = NSColor.clear.cgColor
 
         panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 800, height: 240),
+            contentRect: NSRect(x: 0, y: 0, width: 320, height: 50),
             styleMask: [.nonactivatingPanel, .borderless],
             backing: .buffered,
             defer: true
@@ -255,8 +277,17 @@ final class IslandPanelController {
         panel.isOpaque = false
         panel.hasShadow = false
         panel.hidesOnDeactivate = false
-        panel.ignoresMouseEvents = false
+        panel.ignoresMouseEvents = isClickThroughEnabled
         panel.contentView = hosting
+    }
+
+    func setRootView<V: View>(_ view: V) {
+        hosting.rootView = AnyView(view)
+    }
+
+    func setClickThrough(_ enabled: Bool) {
+        isClickThroughEnabled = enabled
+        panel.ignoresMouseEvents = enabled
     }
 
     func show() {
@@ -270,6 +301,15 @@ final class IslandPanelController {
 
     func toggle() {
         if panel.isVisible { hide() } else { show() }
+    }
+
+    func setExpanded(_ expanded: Bool) {
+        // Keep the window as small as possible so it doesn't block clicks in other apps.
+        let targetSize = expanded
+        ? NSSize(width: 760, height: 260)
+        : NSSize(width: 320, height: 50)
+        panel.setContentSize(targetSize)
+        positionTopCenter()
     }
 
     private func positionTopCenter() {
@@ -287,13 +327,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private let nowPlaying = NowPlayingService()
     private var panelController: IslandPanelController?
+    private var clickThroughEnabled = false
+    private var clickThroughMenuItem: NSMenuItem?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
 
         nowPlaying.start()
-        panelController = IslandPanelController(rootView: IslandView(nowPlaying: nowPlaying))
-        panelController?.show()
+        let controller = IslandPanelController(rootView: EmptyView())
+        panelController = controller
+        controller.setExpanded(false)
+        controller.setRootView(IslandView(nowPlaying: nowPlaying) { expanded in
+            controller.setExpanded(expanded)
+        })
+        controller.show()
 
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         item.button?.image = NSImage(systemSymbolName: "capsule", accessibilityDescription: "Dynamic Island")
@@ -303,13 +350,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let menu = NSMenu()
         menu.addItem(NSMenuItem(title: "Toggle Island", action: #selector(toggleIsland), keyEquivalent: "i"))
+        let clickItem = NSMenuItem(title: "Allow clicking through (over apps)",
+                                   action: #selector(toggleClickThrough),
+                                   keyEquivalent: "")
+        clickItem.state = clickThroughEnabled ? .on : .off
+        menu.addItem(clickItem)
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q"))
         statusItem?.menu = menu
+        clickThroughMenuItem = clickItem
     }
 
     @objc private func toggleIsland() {
         panelController?.toggle()
+    }
+
+    @objc private func toggleClickThrough() {
+        clickThroughEnabled.toggle()
+        clickThroughMenuItem?.state = clickThroughEnabled ? .on : .off
+        panelController?.setClickThrough(clickThroughEnabled)
     }
 
     @objc private func quit() {
