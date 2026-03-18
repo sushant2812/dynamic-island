@@ -256,6 +256,51 @@ final class IslandState: ObservableObject {
     @Published var expanded: Bool = false
 }
 
+struct SoundVisualizerView: View {
+    let isPlaying: Bool
+    private let barCount = 56
+
+    var body: some View {
+        GeometryReader { geo in
+            let width = geo.size.width
+            let spacing: CGFloat = 0.8
+            let barWidth = max(1, (width - spacing * CGFloat(barCount - 1)) / CGFloat(barCount))
+            let maxBarHeight: CGFloat = geo.size.height
+
+            TimelineView(.animation) { timeline in
+                let t = timeline.date.timeIntervalSinceReferenceDate
+                let intensity: CGFloat = isPlaying ? 1.0 : 0.25
+
+                HStack(alignment: .bottom, spacing: spacing) {
+                    ForEach(0..<barCount, id: \.self) { i in
+                        // Create a "spectrum-ish" animation with stable per-bar phase.
+                        let phase = Double(i) * 0.18
+                        let a = (sin(t * 2.6 + phase) + 1) / 2
+                        let b = (sin(t * 1.4 + phase * 1.7) + 1) / 2
+                        let raw = 0.55 * a + 0.45 * b
+                        // Pseudo-random shimmer to avoid looking too sinusoidal.
+                        let shimmer = (sin(Double(i) * 12.9898 + t * 7.13) + 1) / 2
+                        let mix = 0.7 * raw + 0.3 * shimmer
+
+                        let height = maxBarHeight * (0.12 + 0.88 * mix) * intensity
+
+                        let color = Color(
+                            hue: (Double(i) / Double(barCount)) * 0.75,
+                            saturation: 1.0,
+                            brightness: 1.0
+                        )
+
+                        RoundedRectangle(cornerRadius: barWidth / 2, style: .continuous)
+                            .fill(color.opacity(isPlaying ? 0.98 : 0.5))
+                            .frame(width: barWidth, height: height)
+                    }
+                }
+            }
+        }
+        .clipped()
+    }
+}
+
 struct IslandView: View {
     @ObservedObject var nowPlaying: NowPlayingService
     @ObservedObject var islandState: IslandState
@@ -353,20 +398,29 @@ struct IslandView: View {
                             Circle()
                                 .fill(Color.white.opacity(0.16))
                                 .frame(width: 20, height: 20)
-                            Image(systemName: iconName)
-                                .font(.system(size: 12, weight: .semibold))
-                                .foregroundStyle(.white.opacity(0.9))
+                            if let album = nowPlaying.session?.album,
+                               !album.isEmpty,
+                               let img = nowPlaying.artworkImage {
+                                Image(nsImage: img)
+                                    .resizable()
+                                    .scaledToFill()
+                                    .frame(width: 18, height: 18)
+                                    .clipShape(Circle())
+                            } else {
+                                Image(systemName: iconName)
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundStyle(.white.opacity(0.9))
+                            }
                         }
 
                         Spacer(minLength: 0)
 
                         // Right: soundwaves indicator
-                        Image(systemName: "waveform")
-                            .font(.system(size: 14, weight: .semibold))
-                            .foregroundStyle(.white.opacity((nowPlaying.session?.playback == .playing) ? 0.95 : 0.55))
+                        SoundVisualizerView(isPlaying: nowPlaying.session?.playback == .playing)
+                            .frame(width: 44, height: 16)
                     }
                     .padding(.horizontal, 12)
-                    .frame(width: 240, height: 32)
+                    .frame(width: 280, height: 32)
                     .background(
                         Capsule()
                             .fill(Color.black.opacity(0.92))
@@ -474,7 +528,7 @@ final class IslandPanelController {
         hosting.hitTestBandHeight = expanded ? 96 : 72
         let targetSize = expanded
         ? NSSize(width: 520, height: 72)
-        : NSSize(width: 320, height: 50)
+        : NSSize(width: 320, height: 56)
         panel.setContentSize(targetSize)
         positionTopCenter()
     }
