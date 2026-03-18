@@ -399,6 +399,31 @@ struct NotificationsStackView: View {
     }
 }
 
+/// Chrome icon rendered from bundled `Resources/chrome.png`.
+/// Used in both the collapsed pill and expanded panel (when there's no album artwork).
+struct ChromeIconView: View {
+    let size: CGFloat
+    let cornerRadius: CGFloat
+    let fallbackSystemName: String
+
+    var body: some View {
+        if let url = Bundle.module.url(forResource: "chrome", withExtension: "png"),
+           let chromeImg = NSImage(contentsOf: url) {
+            Image(nsImage: chromeImg)
+                .resizable()
+                .scaledToFit()
+                .frame(width: size, height: size)
+                .clipShape(
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                )
+        } else {
+            Image(systemName: fallbackSystemName)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.9))
+        }
+    }
+}
+
 struct SoundVisualizerView: View {
     let isPlaying: Bool
     let baseColor: Color
@@ -481,9 +506,18 @@ struct IslandView: View {
                                 .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                                 .shadow(color: .black.opacity(0.25), radius: 8, y: 4)
                         } else {
-                            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .fill(Color.white.opacity(0.06))
+                            if isChrome {
+                                ZStack {
+                                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                        .fill(Color.white.opacity(0.06))
+                                    ChromeIconView(size: 28, cornerRadius: 10, fallbackSystemName: iconName)
+                                }
                                 .frame(width: 40, height: 40)
+                            } else {
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .fill(Color.white.opacity(0.06))
+                                    .frame(width: 40, height: 40)
+                            }
                         }
 
                         Text(condensedNowPlayingLine)
@@ -571,9 +605,13 @@ struct IslandView: View {
                                     .frame(width: 27, height: 27)
                                     .clipShape(Circle())
                             } else {
-                                Image(systemName: iconName)
-                                    .font(.system(size: 12, weight: .semibold))
-                                    .foregroundStyle(.white.opacity(0.9))
+                                if isChrome {
+                                    ChromeIconView(size: 22, cornerRadius: 999, fallbackSystemName: iconName)
+                                } else {
+                                    Image(systemName: iconName)
+                                        .font(.system(size: 12, weight: .semibold))
+                                        .foregroundStyle(.white.opacity(0.9))
+                                }
                             }
                         }
 
@@ -616,6 +654,11 @@ struct IslandView: View {
 
     private var subtitle: String? {
         nowPlaying.session?.subtitle ?? "Spotify / Chrome"
+    }
+
+    private var isChrome: Bool {
+        let subtitle = nowPlaying.session?.subtitle?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (nowPlaying.session?.source == .chrome) || (subtitle?.range(of: "Chrome", options: .caseInsensitive) != nil)
     }
 
     private var condensedNowPlayingLine: String {
