@@ -489,14 +489,14 @@ struct IslandView: View {
                         ZStack {
                             Circle()
                                 .fill(Color.white.opacity(0.16))
-                                .frame(width: 20, height: 20)
+                                .frame(width: 27, height: 27)
                             if let album = nowPlaying.session?.album,
                                !album.isEmpty,
                                let img = nowPlaying.artworkImage {
                                 Image(nsImage: img)
                                     .resizable()
                                     .scaledToFill()
-                                    .frame(width: 18, height: 18)
+                                    .frame(width: 27, height: 27)
                                     .clipShape(Circle())
                             } else {
                                 Image(systemName: iconName)
@@ -515,7 +515,7 @@ struct IslandView: View {
                             .frame(width: 70, height: 16, alignment: .trailing)
                     }
                     .padding(.horizontal, 12)
-                    .frame(width: 340, height: 32)
+                    .frame(width: 315, height: 39)
                     .background(
                         Capsule()
                             .fill(Color.black.opacity(0.92))
