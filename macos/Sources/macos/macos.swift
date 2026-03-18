@@ -515,7 +515,7 @@ struct IslandView: View {
                             .frame(width: 70, height: 16, alignment: .trailing)
                     }
                     .padding(.horizontal, 12)
-                    .frame(width: 315, height: 39)
+                    .frame(width: 315, height: 35)
                     .background(
                         Capsule()
                             .fill(Color.black.opacity(0.92))
@@ -528,11 +528,14 @@ struct IslandView: View {
                     .shadow(color: .black.opacity(0.35), radius: 18, y: 10)
                 }
                 .buttonStyle(.plain)
+                .transition(.opacity.combined(with: .move(edge: .top)))
+                .zIndex(0)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .padding(.top, 0)
         .background(Color.clear)
+        .animation(.spring(response: 0.28, dampingFraction: 0.85), value: islandState.expanded)
     }
 
     private var title: String {
@@ -618,14 +621,30 @@ final class IslandPanelController {
     }
 
     func setExpanded(_ expanded: Bool) {
-        // Keep the window as small as possible so it doesn't block clicks in other apps.
+        // Keep the window as small as possible so it doesn't block clicks in other apps,
+        // while animating the size/position for a smoother pill <-> expanded transition.
         isExpanded = expanded
         hosting.hitTestBandHeight = expanded ? 96 : 72
+
         let targetSize = expanded
         ? NSSize(width: 520, height: 72)
         : NSSize(width: 380, height: 56)
-        panel.setContentSize(targetSize)
-        positionTopCenter()
+
+        let nextFrame = topCenterFrame(size: targetSize, expanded: expanded)
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.22
+            panel.animator().setFrame(nextFrame, display: true)
+        }
+    }
+
+    private func topCenterFrame(size: NSSize, expanded: Bool) -> NSRect {
+        guard let screen = NSScreen.main else { return panel.frame }
+        let frame = screen.frame
+        let x = frame.minX + (frame.width - size.width) / 2
+        // Nudge down so expanded sits below the notch while pill stays closer to original.
+        let yNudge: CGFloat = expanded ? 50 : 4
+        let y = frame.maxY - size.height - yNudge
+        return NSRect(x: round(x), y: round(y), width: size.width, height: size.height)
     }
 
     func containsScreenPoint(_ point: CGPoint) -> Bool {
