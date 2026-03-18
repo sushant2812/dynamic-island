@@ -3,6 +3,55 @@ import Foundation
 import Combine
 import SwiftUI
 
+/// Posts macOS system media-key events (aux control buttons) so the OS routes them
+/// through the standard Media Session pipeline (e.g. Chrome/YouTube reacts like a real
+/// hardware media key press).
+final class MediaKeySender {
+    // hidsystem/ev_keymap.h
+    private enum NXKey: UInt32 {
+        case play = 16
+        case next = 17
+        case previous = 18
+    }
+
+    private func postAuxKey(_ key: UInt32) {
+        func doKey(down: Bool) {
+            let flags = NSEvent.ModifierFlags(rawValue: down ? 0xa00 : 0xb00)
+            let data1 = Int((key << 16) | (down ? 0xa00 : 0xb00))
+
+            if let ev = NSEvent.otherEvent(
+                with: .systemDefined,
+                location: NSPoint(x: 0, y: 0),
+                modifierFlags: flags,
+                timestamp: 0,
+                windowNumber: 0,
+                context: nil,
+                subtype: 8,
+                data1: data1,
+                data2: -1
+            ) {
+                // Post via HID event tap so the OS interprets it like a real media key.
+                ev.cgEvent?.post(tap: .cghidEventTap)
+            }
+        }
+
+        doKey(down: true)
+        doKey(down: false)
+    }
+
+    func togglePlayPause() {
+        postAuxKey(NXKey.play.rawValue)
+    }
+
+    func nextTrack() {
+        postAuxKey(NXKey.next.rawValue)
+    }
+
+    func previousTrack() {
+        postAuxKey(NXKey.previous.rawValue)
+    }
+}
+
 enum NowPlayingSource: String {
     case spotify
     case chrome
@@ -174,8 +223,107 @@ final class ChromeNowPlayingProvider {
             subtitle: nil,
             source: .chrome,
             playback: .playing,
-            canPlayPause: false
+            canPlayPause: true
         )
+    }
+
+    func togglePlayPause() {
+        let script = """
+        tell application "Google Chrome"
+          if (count of windows) is 0 then return
+          tell active tab of front window
+            execute javascript "
+              (function() {
+                try {
+                  var isSpotify = (location.href || '').indexOf('open.spotify.com') !== -1;
+                  if (isSpotify) {
+                    // Use Spotify web hotkey: Space = play/pause
+                    window.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', code: 'Space', bubbles: true }));
+                    window.dispatchEvent(new KeyboardEvent('keyup', { key: ' ', code: 'Space', bubbles: true }));
+                    return 'space_dispatched';
+                  }
+
+                  // Generic fallback: toggle first <video>/<audio>.
+                  var m = document.querySelector('video, audio');
+                  if (!m) { return 'no_media'; }
+                  if (m.paused) { m.play(); return 'play'; }
+                  m.pause(); return 'pause';
+                } catch (e) {
+                  return 'error';
+                }
+              })();
+            "
+          end tell
+        end tell
+        return \"ok\"
+        """
+        _ = try? runner.run(script)
+    }
+
+    func previousTrack() {
+        let script = """
+        tell application "Google Chrome"
+          if (count of windows) is 0 then return
+          tell active tab of front window
+            execute javascript "
+              (function() {
+                try {
+                  var isSpotify = (location.href || '').indexOf('open.spotify.com') !== -1;
+                  if (isSpotify) {
+                    // Spotify web hotkey: Up Arrow = previous track
+                    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', code: 'ArrowUp', bubbles: true }));
+                    window.dispatchEvent(new KeyboardEvent('keyup', { key: 'ArrowUp', code: 'ArrowUp', bubbles: true }));
+                    return 'prev_key';
+                  }
+
+                  // Generic fallback: seek back 10 seconds.
+                  var m = document.querySelector('video, audio');
+                  if (!m) { return 'no_media'; }
+                  m.currentTime = Math.max(0, m.currentTime - 10);
+                  return 'back';
+                } catch (e) {
+                  return 'error';
+                }
+              })();
+            "
+          end tell
+        end tell
+        return \"ok\"
+        """
+        _ = try? runner.run(script)
+    }
+
+    func nextTrack() {
+        let script = """
+        tell application "Google Chrome"
+          if (count of windows) is 0 then return
+          tell active tab of front window
+            execute javascript "
+              (function() {
+                try {
+                  var isSpotify = (location.href || '').indexOf('open.spotify.com') !== -1;
+                  if (isSpotify) {
+                    // Spotify web hotkey: Down Arrow = next track
+                    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', code: 'ArrowDown', bubbles: true }));
+                    window.dispatchEvent(new KeyboardEvent('keyup', { key: 'ArrowDown', code: 'ArrowDown', bubbles: true }));
+                    return 'next_key';
+                  }
+
+                  // Generic fallback: seek forward 10 seconds.
+                  var m = document.querySelector('video, audio');
+                  if (!m) { return 'no_media'; }
+                  m.currentTime = m.currentTime + 10;
+                  return 'forward';
+                } catch (e) {
+                  return 'error';
+                }
+              })();
+            "
+          end tell
+        end tell
+        return \"ok\"
+        """
+        _ = try? runner.run(script)
     }
 }
 
@@ -187,6 +335,7 @@ final class NowPlayingService: ObservableObject {
 
     private let spotify = SpotifyNowPlayingProvider()
     private let chrome = ChromeNowPlayingProvider()
+    private let mediaKeys = MediaKeySender()
     private var timer: Timer?
     private var currentArtworkURL: URL? = nil
 
@@ -214,18 +363,18 @@ final class NowPlayingService: ObservableObject {
     }
 
     func togglePlayPauseIfSupported() {
-        guard session?.source == .spotify, session?.canPlayPause == true else { return }
-        spotify.togglePlayPause()
+        guard session?.canPlayPause == true else { return }
+        mediaKeys.togglePlayPause()
     }
 
     func previousTrackIfSupported() {
-        guard session?.source == .spotify else { return }
-        spotify.previousTrack()
+        guard session?.source == .spotify || session?.source == .chrome else { return }
+        mediaKeys.previousTrack()
     }
 
     func nextTrackIfSupported() {
-        guard session?.source == .spotify else { return }
-        spotify.nextTrack()
+        guard session?.source == .spotify || session?.source == .chrome else { return }
+        mediaKeys.nextTrack()
     }
 
     private func refreshArtworkIfNeeded(for session: AudioSession) {
@@ -526,9 +675,9 @@ struct IslandView: View {
 
                         Spacer(minLength: 0)
 
-                        let canUseSpotifyControls = (nowPlaying.session?.source == .spotify)
+                        let canUseMediaControls = (nowPlaying.session?.source == .spotify) || (nowPlaying.session?.source == .chrome)
 
-                        if canUseSpotifyControls {
+                        if canUseMediaControls {
                             HStack(spacing: 8) {
                                 Button {
                                     nowPlaying.previousTrackIfSupported()
