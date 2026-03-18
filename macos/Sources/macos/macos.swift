@@ -428,10 +428,10 @@ struct IslandView: View {
 
                         // Right: soundwaves indicator
                         SoundVisualizerView(isPlaying: nowPlaying.session?.playback == .playing)
-                            .frame(width: 80, height: 16, alignment: .trailing)
+                            .frame(width: 70, height: 16, alignment: .trailing)
                     }
                     .padding(.horizontal, 12)
-                    .frame(width: 360, height: 32)
+                    .frame(width: 340, height: 32)
                     .background(
                         Capsule()
                             .fill(Color.black.opacity(0.92))
@@ -495,7 +495,7 @@ final class IslandPanelController {
         hosting.hitTestBandHeight = 72
 
         panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 400, height: 50),
+            contentRect: NSRect(x: 0, y: 0, width: 380, height: 50),
             styleMask: [.nonactivatingPanel, .borderless],
             backing: .buffered,
             defer: true
@@ -539,7 +539,7 @@ final class IslandPanelController {
         hosting.hitTestBandHeight = expanded ? 96 : 72
         let targetSize = expanded
         ? NSSize(width: 520, height: 72)
-        : NSSize(width: 400, height: 56)
+        : NSSize(width: 380, height: 56)
         panel.setContentSize(targetSize)
         positionTopCenter()
     }
@@ -555,7 +555,7 @@ final class IslandPanelController {
         let x = frame.minX + (frame.width - size.width) / 2
         // Nudge down only while expanded so it sits below the menu-bar/notch region.
         // Expanded sits much lower; collapsed pill should clear the notch a bit. Change 40 to 0 when fixed it
-        let yNudge: CGFloat = isExpanded ? 50 : 10
+        let yNudge: CGFloat = isExpanded ? 50 : 5
         let y = frame.maxY - size.height - yNudge
         panel.setFrameOrigin(NSPoint(x: round(x), y: round(y)))
     }
