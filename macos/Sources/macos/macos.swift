@@ -264,60 +264,72 @@ struct IslandView: View {
     var body: some View {
         VStack(spacing: 10) {
             if islandState.expanded {
-                HStack(alignment: .center, spacing: 12) {
+                HStack(alignment: .center, spacing: 10) {
                     if let img = nowPlaying.artworkImage {
                         Image(nsImage: img)
                             .resizable()
                             .scaledToFill()
-                            .frame(width: 54, height: 54)
-                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                            .shadow(color: .black.opacity(0.25), radius: 10, y: 6)
+                            .frame(width: 40, height: 40)
+                            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                            .shadow(color: .black.opacity(0.25), radius: 8, y: 4)
                     } else {
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
                             .fill(Color.white.opacity(0.06))
-                            .frame(width: 54, height: 54)
+                            .frame(width: 40, height: 40)
                     }
 
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(title)
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(.white.opacity(0.92))
-                            .lineLimit(1)
-
-                        if let artist = nowPlaying.session?.subtitle, !artist.isEmpty {
-                            Text(artist)
-                                .font(.system(size: 12))
-                                .foregroundStyle(.white.opacity(0.62))
-                                .lineLimit(1)
-                        }
-
-                        if let album = nowPlaying.session?.album, !album.isEmpty {
-                            Text(album)
-                                .font(.system(size: 12))
-                                .foregroundStyle(.white.opacity(0.62))
-                                .lineLimit(1)
-                        }
-                    }
+                    Text(condensedNowPlayingLine)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.92))
+                        .lineLimit(1)
 
                     Spacer(minLength: 0)
 
-                    if nowPlaying.session?.source == .spotify {
-                        Button {
-                            nowPlaying.togglePlayPauseIfSupported()
-                        } label: {
-                            Text(nowPlaying.session?.playback == .playing ? "Pause" : "Play")
-                                .font(.system(size: 12, weight: .semibold))
-                                .foregroundStyle(.white.opacity(0.92))
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 6)
-                                .background(Color.white.opacity(0.08))
-                                .clipShape(Capsule())
+                    let canUseSpotifyControls = (nowPlaying.session?.source == .spotify)
+
+                    if canUseSpotifyControls {
+                        HStack(spacing: 8) {
+                            Button {
+                                nowPlaying.previousTrackIfSupported()
+                            } label: {
+                                Image(systemName: "backward.end.fill")
+                                    .font(.system(size: 16, weight: .semibold))
+                                    .foregroundStyle(.white.opacity(0.92))
+                            }
+                            .frame(width: 30, height: 30)
+                            .background(Color.white.opacity(0.08))
+                            .clipShape(Capsule())
+                            .disabled(false)
+
+                            Button {
+                                nowPlaying.togglePlayPauseIfSupported()
+                            } label: {
+                                Image(systemName: (nowPlaying.session?.playback == .playing) ? "pause.fill" : "play.fill")
+                                    .font(.system(size: 16, weight: .semibold))
+                                    .foregroundStyle(.white.opacity(0.92))
+                            }
+                            .frame(width: 36, height: 30)
+                            .background(Color.white.opacity(0.10))
+                            .clipShape(Capsule())
+                            .disabled(!(nowPlaying.session?.canPlayPause ?? false))
+
+                            Button {
+                                nowPlaying.nextTrackIfSupported()
+                            } label: {
+                                Image(systemName: "forward.end.fill")
+                                    .font(.system(size: 16, weight: .semibold))
+                                    .foregroundStyle(.white.opacity(0.92))
+                            }
+                            .frame(width: 30, height: 30)
+                            .background(Color.white.opacity(0.08))
+                            .clipShape(Capsule())
+                            .disabled(false)
                         }
-                        .disabled(!(nowPlaying.session?.canPlayPause ?? false))
                     }
                 }
-                .padding(14)
-                .frame(width: 640, alignment: .leading)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .frame(width: 520, alignment: .leading)
                 .background(
                     RoundedRectangle(cornerRadius: 16, style: .continuous)
                         .fill(Color.black.opacity(0.78))
@@ -336,6 +348,7 @@ struct IslandView: View {
                     }
                 } label: {
                     HStack(spacing: 10) {
+                        // Left: current app / source icon
                         ZStack {
                             Circle()
                                 .fill(Color.white.opacity(0.16))
@@ -344,7 +357,13 @@ struct IslandView: View {
                                 .font(.system(size: 12, weight: .semibold))
                                 .foregroundStyle(.white.opacity(0.9))
                         }
+
                         Spacer(minLength: 0)
+
+                        // Right: soundwaves indicator
+                        Image(systemName: "waveform")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(.white.opacity((nowPlaying.session?.playback == .playing) ? 0.95 : 0.55))
                     }
                     .padding(.horizontal, 12)
                     .frame(width: 240, height: 32)
@@ -373,6 +392,20 @@ struct IslandView: View {
 
     private var subtitle: String? {
         nowPlaying.session?.subtitle ?? "Spotify / Chrome"
+    }
+
+    private var condensedNowPlayingLine: String {
+        let t = nowPlaying.session?.title ?? "Nothing playing"
+        var parts: [String] = [t]
+
+        if let artist = nowPlaying.session?.subtitle, !artist.isEmpty {
+            parts.append(artist)
+        }
+        if let album = nowPlaying.session?.album, !album.isEmpty {
+            parts.append(album)
+        }
+
+        return parts.joined(separator: " • ")
     }
 
     private var iconName: String {
@@ -438,9 +471,9 @@ final class IslandPanelController {
     func setExpanded(_ expanded: Bool) {
         // Keep the window as small as possible so it doesn't block clicks in other apps.
         isExpanded = expanded
-        hosting.hitTestBandHeight = expanded ? 160 : 72
+        hosting.hitTestBandHeight = expanded ? 96 : 72
         let targetSize = expanded
-        ? NSSize(width: 760, height: 260)
+        ? NSSize(width: 520, height: 72)
         : NSSize(width: 320, height: 50)
         panel.setContentSize(targetSize)
         positionTopCenter()
@@ -455,7 +488,10 @@ final class IslandPanelController {
         let frame = screen.frame
         let size = panel.frame.size
         let x = frame.minX + (frame.width - size.width) / 2
-        let y = frame.maxY - size.height
+        // Nudge down only while expanded so it sits below the menu-bar/notch region.
+        // Expanded sits much lower; collapsed pill keeps its original position.
+        let yNudge: CGFloat = isExpanded ? 50 : 0
+        let y = frame.maxY - size.height - yNudge
         panel.setFrameOrigin(NSPoint(x: round(x), y: round(y)))
     }
 }
