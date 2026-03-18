@@ -167,12 +167,11 @@ final class ChromeNowPlayingProvider {
         end tell
         """
 
-        guard let title = try? runner.run(script).trimmingCharacters(in: .whitespacesAndNewlines),
-              !title.isEmpty else { return nil }
+         guard let _ = try? runner.run(script).trimmingCharacters(in: .whitespacesAndNewlines) else { return nil }
 
         return AudioSession(
-            title: title,
-            subtitle: "Chrome",
+            title: "Chrome",
+            subtitle: nil,
             source: .chrome,
             playback: .playing,
             canPlayPause: false
