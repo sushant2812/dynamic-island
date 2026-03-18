@@ -2,6 +2,7 @@ import AppKit
 import Foundation
 import Combine
 import SwiftUI
+import ScreenCaptureKit
 
 /// Posts macOS system media-key events (aux control buttons) so the OS routes them
 /// through the standard Media Session pipeline (e.g. Chrome/YouTube reacts like a real
@@ -481,6 +482,117 @@ final class IslandState: ObservableObject {
     @Published var expanded: Bool = false
 }
 
+/// Captures system audio via ScreenCaptureKit and publishes a smoothed RMS
+/// level (0…1) that drives the sound visualizer bars.
+@MainActor
+final class SystemAudioLevelMonitor: ObservableObject {
+    @Published private(set) var audioLevel: CGFloat = 0
+
+    private var stream: SCStream?
+    private let handler = AudioLevelStreamHandler()
+
+    func start() {
+        handler.onLevel = { [weak self] level in
+            self?.audioLevel = level
+        }
+        Task { await beginCapture() }
+    }
+
+    func stop() {
+        handler.onLevel = nil
+        Task {
+            try? await stream?.stopCapture()
+            stream = nil
+        }
+    }
+
+    private func beginCapture() async {
+        do {
+            let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
+            guard let display = content.displays.first else { return }
+
+            let filter = SCContentFilter(
+                display: display,
+                excludingApplications: [],
+                exceptingWindows: []
+            )
+
+            let config = SCStreamConfiguration()
+            config.capturesAudio = true
+            config.excludesCurrentProcessAudio = true
+            config.width = 2
+            config.height = 2
+            config.minimumFrameInterval = CMTime(value: 1, timescale: 1)
+            config.showsCursor = false
+
+            let stream = SCStream(filter: filter, configuration: config, delegate: nil)
+            try stream.addStreamOutput(handler, type: .audio, sampleHandlerQueue: handler.queue)
+            try await stream.startCapture()
+            self.stream = stream
+        } catch {
+            // Screen-recording permission not granted or no displays available.
+        }
+    }
+}
+
+final class AudioLevelStreamHandler: NSObject, SCStreamOutput, @unchecked Sendable {
+    let queue = DispatchQueue(label: "audio.level.stream", qos: .userInteractive)
+    var onLevel: ((CGFloat) -> Void)?
+    private var smoothed: CGFloat = 0
+
+    func stream(
+        _ stream: SCStream,
+        didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
+        of type: SCStreamOutputType
+    ) {
+        guard type == .audio else { return }
+        guard let blockBuffer = sampleBuffer.dataBuffer else {
+            dispatchLevel(0)
+            return
+        }
+
+        var length = 0
+        var dataPointer: UnsafeMutablePointer<Int8>?
+        CMBlockBufferGetDataPointer(
+            blockBuffer,
+            atOffset: 0,
+            lengthAtOffsetOut: nil,
+            totalLengthOut: &length,
+            dataPointerOut: &dataPointer
+        )
+
+        guard let data = dataPointer, length > 0 else {
+            dispatchLevel(0)
+            return
+        }
+
+        let floatCount = length / MemoryLayout<Float>.size
+        guard floatCount > 0 else {
+            dispatchLevel(0)
+            return
+        }
+
+        let floats = UnsafeBufferPointer(
+            start: UnsafeRawPointer(data).assumingMemoryBound(to: Float.self),
+            count: floatCount
+        )
+
+        var sum: Float = 0
+        for sample in floats { sum += sample * sample }
+        let rms = sum.isFinite ? sqrt(sum / Float(floatCount)) : 0
+
+        // sqrt compresses the range so quiet sounds are still visible.
+        let raw = CGFloat(min(1.0, sqrt(Double(rms)) * 3.5))
+        smoothed = 0.35 * raw + 0.65 * smoothed
+        dispatchLevel(smoothed)
+    }
+
+    private func dispatchLevel(_ level: CGFloat) {
+        let callback = onLevel
+        DispatchQueue.main.async { callback?(level) }
+    }
+}
+
 struct InternalNotification: Identifiable, Equatable {
     let id = UUID()
     var title: String
@@ -573,7 +685,7 @@ struct ChromeIconView: View {
 }
 
 struct SoundVisualizerView: View {
-    let isPlaying: Bool
+    let audioLevel: CGFloat
     let baseColor: Color
     private let barCount = 10
 
@@ -595,7 +707,7 @@ struct SoundVisualizerView: View {
 
             TimelineView(.animation) { timeline in
                 let t = timeline.date.timeIntervalSinceReferenceDate
-                let intensity: CGFloat = isPlaying ? 1.0 : 0.25
+                let intensity: CGFloat = audioLevel
                 let frame = floor(t * 38) // controls spike update rate
 
                 ZStack(alignment: .trailing) {
@@ -618,7 +730,7 @@ struct SoundVisualizerView: View {
                             let height = maxBarHeight * (0.10 + 0.90 * mix) * intensity
 
                             RoundedRectangle(cornerRadius: max(1, barWidth * 0.2), style: .continuous)
-                                .fill(baseColor.opacity(isPlaying ? 0.98 : 0.35))
+                                .fill(baseColor.opacity(audioLevel > 0.01 ? 0.98 : 0.0))
                                 .frame(width: barWidth, height: height)
                         }
                     }
@@ -634,6 +746,7 @@ struct SoundVisualizerView: View {
 
 struct IslandView: View {
     @ObservedObject var nowPlaying: NowPlayingService
+    @ObservedObject var audioMonitor: SystemAudioLevelMonitor
     @ObservedObject var islandState: IslandState
     @ObservedObject var notifications: NotificationsStore
     @Namespace private var pillNamespace
@@ -767,7 +880,7 @@ struct IslandView: View {
 
                         // Right: soundwaves indicator
                         SoundVisualizerView(
-                            isPlaying: nowPlaying.session?.playback == .playing,
+                            audioLevel: audioMonitor.audioLevel,
                             baseColor: Color(nsColor: nowPlaying.waveformAccentColor ?? .white)
                         )
                             .frame(width: 70, height: 16, alignment: .trailing)
@@ -931,6 +1044,7 @@ final class IslandPanelController {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private let nowPlaying = NowPlayingService()
+    private let audioMonitor = SystemAudioLevelMonitor()
     private var panelController: IslandPanelController?
     private let islandState = IslandState()
     private let notifications = NotificationsStore()
@@ -943,11 +1057,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.accessory)
 
         nowPlaying.start()
+        audioMonitor.start()
         let controller = IslandPanelController(rootView: EmptyView())
         panelController = controller
         controller.setExpanded(false)
 
-        controller.setRootView(IslandView(nowPlaying: nowPlaying, islandState: islandState, notifications: notifications))
+        controller.setRootView(IslandView(nowPlaying: nowPlaying, audioMonitor: audioMonitor, islandState: islandState, notifications: notifications))
         controller.show()
 
         // Resize the NSPanel when SwiftUI state changes.
