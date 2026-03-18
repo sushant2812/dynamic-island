@@ -258,43 +258,54 @@ final class IslandState: ObservableObject {
 
 struct SoundVisualizerView: View {
     let isPlaying: Bool
-    private let barCount = 56
+    private let barCount = 24
 
+    private func fract(_ x: Double) -> Double { x - floor(x) }
+
+    /// Spike-based visualizer: sparse peaks with sharp decays.
     var body: some View {
         GeometryReader { geo in
             let width = geo.size.width
-            let spacing: CGFloat = 0.8
-            let barWidth = max(1, (width - spacing * CGFloat(barCount - 1)) / CGFloat(barCount))
-            let maxBarHeight: CGFloat = geo.size.height
+            // Emit only on the right half of the pill (horizontal split),
+            // leaving an empty gap on the left next to the notch.
+            let emitWidth = width / 2
+            // Increase gap so bars are crisp and not a thick block.
+            let spacing: CGFloat = 1.05
+            let barWidth = max(1, (emitWidth - spacing * CGFloat(barCount - 1)) / CGFloat(barCount))
+
+            // Cap spike height so peaks don't visually collide with the notch.
+            let maxBarHeight: CGFloat = geo.size.height * 0.85
 
             TimelineView(.animation) { timeline in
                 let t = timeline.date.timeIntervalSinceReferenceDate
                 let intensity: CGFloat = isPlaying ? 1.0 : 0.25
+                let frame = floor(t * 38) // controls spike update rate
 
                 HStack(alignment: .bottom, spacing: spacing) {
                     ForEach(0..<barCount, id: \.self) { i in
-                        // Create a "spectrum-ish" animation with stable per-bar phase.
-                        let phase = Double(i) * 0.18
-                        let a = (sin(t * 2.6 + phase) + 1) / 2
-                        let b = (sin(t * 1.4 + phase * 1.7) + 1) / 2
-                        let raw = 0.55 * a + 0.45 * b
-                        // Pseudo-random shimmer to avoid looking too sinusoidal.
-                        let shimmer = (sin(Double(i) * 12.9898 + t * 7.13) + 1) / 2
-                        let mix = 0.7 * raw + 0.3 * shimmer
+                        let seed = Double(i) * 13.13 + frame * 0.19
+                        let r = fract(sin(seed) * 43758.5453)
 
-                        let height = maxBarHeight * (0.12 + 0.88 * mix) * intensity
+                        let threshold = 0.70
+                        let exponent = 10.0
+                        let spike = max(0, r - threshold)
+                        let spikeNorm = pow(spike / (1.0 - threshold), exponent)
 
-                        let color = Color(
-                            hue: (Double(i) / Double(barCount)) * 0.75,
-                            saturation: 1.0,
-                            brightness: 1.0
-                        )
+                        let decaySeed = Double(i) * 7.77 + frame * 0.37
+                        let r2 = fract(sin(decaySeed) * 961.73)
+                        let decayPulse = pow(r2, 2.0)
 
-                        RoundedRectangle(cornerRadius: barWidth / 2, style: .continuous)
-                            .fill(color.opacity(isPlaying ? 0.98 : 0.5))
+                        let mix = min(1.0, 0.18 * decayPulse + 0.82 * spikeNorm)
+                        let height = maxBarHeight * (0.10 + 0.90 * mix) * intensity
+
+                        RoundedRectangle(cornerRadius: max(1, barWidth * 0.2), style: .continuous)
+                            .fill(Color.white.opacity(isPlaying ? 0.98 : 0.35))
                             .frame(width: barWidth, height: height)
                     }
                 }
+                // Keep the bars baseline locked to the bottom and aligned right,
+                // and ensure the left half stays empty.
+                .frame(width: width, height: geo.size.height, alignment: .bottomTrailing)
             }
         }
         .clipped()
@@ -417,10 +428,10 @@ struct IslandView: View {
 
                         // Right: soundwaves indicator
                         SoundVisualizerView(isPlaying: nowPlaying.session?.playback == .playing)
-                            .frame(width: 44, height: 16)
+                            .frame(width: 80, height: 16, alignment: .trailing)
                     }
                     .padding(.horizontal, 12)
-                    .frame(width: 280, height: 32)
+                    .frame(width: 360, height: 32)
                     .background(
                         Capsule()
                             .fill(Color.black.opacity(0.92))
@@ -484,7 +495,7 @@ final class IslandPanelController {
         hosting.hitTestBandHeight = 72
 
         panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 320, height: 50),
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 50),
             styleMask: [.nonactivatingPanel, .borderless],
             backing: .buffered,
             defer: true
@@ -528,7 +539,7 @@ final class IslandPanelController {
         hosting.hitTestBandHeight = expanded ? 96 : 72
         let targetSize = expanded
         ? NSSize(width: 520, height: 72)
-        : NSSize(width: 320, height: 56)
+        : NSSize(width: 400, height: 56)
         panel.setContentSize(targetSize)
         positionTopCenter()
     }
@@ -543,8 +554,8 @@ final class IslandPanelController {
         let size = panel.frame.size
         let x = frame.minX + (frame.width - size.width) / 2
         // Nudge down only while expanded so it sits below the menu-bar/notch region.
-        // Expanded sits much lower; collapsed pill keeps its original position.
-        let yNudge: CGFloat = isExpanded ? 50 : 0
+        // Expanded sits much lower; collapsed pill should clear the notch a bit. Change 40 to 0 when fixed it
+        let yNudge: CGFloat = isExpanded ? 50 : 10
         let y = frame.maxY - size.height - yNudge
         panel.setFrameOrigin(NSPoint(x: round(x), y: round(y)))
     }
