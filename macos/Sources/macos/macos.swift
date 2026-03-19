@@ -334,11 +334,17 @@ final class ChromeNowPlayingProvider {
           var e = elems[i];
           if (e.muted || e.volume === 0) continue;
           if (!e.paused && e.currentTime > 0) { state = 'playing'; break; }
-          if (e.paused && e.currentTime > 0 && state !== 'playing') state = 'paused';
+        }
+        if (state === 'none') {
+          for (var j = 0; j < elems.length; j++) {
+            var el = elems[j];
+            if (!el.paused && el.currentTime > 0) { state = 'playing'; break; }
+            if (el.paused && el.currentTime > 0) { state = 'paused'; break; }
+          }
         }
       }
       if (state === 'none' && location.host === 'open.spotify.com') {
-        var btn = document.querySelector('[data-testid="control-button-playpause"]');
+        var btn = document.querySelector('[data-testid=control-button-playpause]');
         if (btn) {
           var lbl = (btn.getAttribute('aria-label') || '').toLowerCase();
           if (lbl.indexOf('pause') !== -1) state = 'playing';
