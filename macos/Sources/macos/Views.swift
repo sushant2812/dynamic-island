@@ -149,8 +149,8 @@ struct IslandView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .padding(.top, 0)
         .background(Color.clear)
-        .animation(.spring(response: 0.28, dampingFraction: 0.85), value: islandState.expanded)
-        .animation(.spring(response: 0.35, dampingFraction: 0.8), value: nowPlaying.session != nil)
+        .animation(.spring(response: 0.45, dampingFraction: 0.86), value: islandState.expanded)
+        .animation(.spring(response: 0.45, dampingFraction: 0.86), value: nowPlaying.session != nil)
     }
 
     // MARK: - Expanded Panel
@@ -279,7 +279,7 @@ struct IslandView: View {
 
         return Button {
             guard hasSession else { return }
-            withAnimation(.spring(response: 0.28, dampingFraction: 0.85)) {
+            withAnimation(.spring(response: 0.45, dampingFraction: 0.86)) {
                 islandState.expanded = true
             }
         } label: {

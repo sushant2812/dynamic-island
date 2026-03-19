@@ -44,7 +44,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in
                 guard let self, self.islandState.expanded else { return }
-                withAnimation(.spring(response: 0.28, dampingFraction: 0.85)) {
+                withAnimation(.spring(response: 0.45, dampingFraction: 0.86)) {
                     self.islandState.expanded = false
                 }
             }
@@ -57,7 +57,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let point = NSEvent.mouseLocation
             if !controller.containsScreenPoint(point) {
                 Task { @MainActor in
-                    withAnimation(.spring(response: 0.28, dampingFraction: 0.85)) {
+                    withAnimation(.spring(response: 0.45, dampingFraction: 0.86)) {
                         self.islandState.expanded = false
                     }
                 }

@@ -68,6 +68,8 @@ final class IslandPanelController {
         if panel.isVisible { hide() } else { show() }
     }
 
+    private static let springTiming = CAMediaTimingFunction(controlPoints: 0.22, 1.0, 0.36, 1.0)
+
     func setHasSession(_ value: Bool) {
         hasSession = value
         guard !isExpanded else { return }
@@ -79,8 +81,8 @@ final class IslandPanelController {
 
         let nextFrame = topCenterFrame(size: targetSize, expanded: false)
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.3
-            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            context.duration = 0.45
+            context.timingFunction = Self.springTiming
             panel.animator().setFrame(nextFrame, display: true)
         }
     }
@@ -102,8 +104,8 @@ final class IslandPanelController {
 
         let nextFrame = topCenterFrame(size: targetSize, expanded: expanded)
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = expanded ? 0.25 : 0.3
-            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            context.duration = expanded ? 0.42 : 0.45
+            context.timingFunction = Self.springTiming
             panel.animator().setFrame(nextFrame, display: true)
         }
     }
