@@ -55,6 +55,7 @@ final class MediaKeySender {
 
 enum NowPlayingSource: String {
     case spotify
+    case appleMusic
     case chrome
     case unknown
 }
@@ -68,7 +69,6 @@ enum PlaybackState: String {
 struct AudioSession: Equatable {
     var title: String
     var subtitle: String?
-    var album: String?
     var artworkURL: URL?
     var source: NowPlayingSource
     var playback: PlaybackState
@@ -125,17 +125,15 @@ final class SpotifyNowPlayingProvider {
           set pState to player state as string
           set tName to ""
           set tArtist to ""
-          set tAlbum to ""
           set tArtworkURL to ""
           try
             set tName to name of current track
             set tArtist to artist of current track
-            set tAlbum to album of current track
           end try
           try
             set tArtworkURL to artwork url of current track
           end try
-          return pState & "||" & tName & "||" & tArtist & "||" & tAlbum & "||" & tArtworkURL
+          return pState & "||" & tName & "||" & tArtist & "||" & tArtworkURL
         end tell
         """
 
@@ -144,8 +142,7 @@ final class SpotifyNowPlayingProvider {
         let state = parts.first ?? "stopped"
         let title = (parts.count > 1 ? parts[1] : "").trimmingCharacters(in: .whitespacesAndNewlines)
         let artist = (parts.count > 2 ? parts[2] : "").trimmingCharacters(in: .whitespacesAndNewlines)
-        let album = (parts.count > 3 ? parts[3] : "").trimmingCharacters(in: .whitespacesAndNewlines)
-        let artworkURLString = (parts.count > 4 ? parts[4] : "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let artworkURLString = (parts.count > 3 ? parts[3] : "").trimmingCharacters(in: .whitespacesAndNewlines)
 
         guard state == "playing" || state == "paused" else { return nil }
         guard !title.isEmpty else { return nil }
@@ -155,7 +152,6 @@ final class SpotifyNowPlayingProvider {
         return AudioSession(
             title: title,
             subtitle: artist.isEmpty ? nil : artist,
-            album: album.isEmpty ? nil : album,
             artworkURL: artworkURL,
             source: .spotify,
             playback: playback,
@@ -189,6 +185,125 @@ final class SpotifyNowPlayingProvider {
           if (name of processes) does not contain "Spotify" then return
         end tell
         tell application "Spotify" to next track
+        """
+        _ = try? runner.run(script)
+    }
+}
+
+final class AppleMusicNowPlayingProvider {
+    private let runner = AppleScriptRunner()
+    private var lastArtworkTrack: String?
+    private var cachedArtworkURL: URL?
+
+    func fetch() -> AudioSession? {
+        let script = """
+        tell application "System Events"
+          if (name of processes) does not contain "Music" then return ""
+        end tell
+        tell application "Music"
+          if player state is stopped then return ""
+          set pState to "playing"
+          if player state is paused then set pState to "paused"
+          set tName to ""
+          set tArtist to ""
+          set tAlbum to ""
+          try
+            set tName to name of current track
+            set tArtist to artist of current track
+            set tAlbum to album of current track
+          end try
+          return pState & "||" & tName & "||" & tArtist & "||" & tAlbum
+        end tell
+        """
+
+        guard let raw = try? runner.run(script), !raw.isEmpty else { return nil }
+        let parts = raw.components(separatedBy: "||")
+        let state = parts.first ?? "stopped"
+        let title = (parts.count > 1 ? parts[1] : "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let artist = (parts.count > 2 ? parts[2] : "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let album = (parts.count > 3 ? parts[3] : "").trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard state == "playing" || state == "paused" else { return nil }
+        guard !title.isEmpty else { return nil }
+
+        let trackKey = "\(title)—\(artist)"
+        if trackKey != lastArtworkTrack {
+            lastArtworkTrack = trackKey
+            cachedArtworkURL = lookupArtworkURL(title: title, artist: artist, album: album)
+        }
+
+        let playback: PlaybackState = (state == "playing") ? .playing : .paused
+        return AudioSession(
+            title: title,
+            subtitle: artist.isEmpty ? nil : artist,
+            artworkURL: cachedArtworkURL,
+            source: .appleMusic,
+            playback: playback,
+            canPlayPause: true
+        )
+    }
+
+    private func sanitizeForSearch(_ text: String) -> String {
+        text.replacingOccurrences(of: "$", with: "S")
+            .replacingOccurrences(of: "&", with: " ")
+            .replacingOccurrences(of: "*", with: "")
+    }
+
+    private func lookupArtworkURL(title: String, artist: String, album: String) -> URL? {
+        let cleanArtist = sanitizeForSearch(artist)
+        var queries = ["\(title) \(cleanArtist)"]
+        if !album.isEmpty { queries.append("\(album) \(cleanArtist)") }
+        queries.append(title)
+
+        for q in queries {
+            guard let encoded = q.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+                  let searchURL = URL(string: "https://itunes.apple.com/search?term=\(encoded)&entity=song&limit=5") else {
+                continue
+            }
+            guard let data = try? Data(contentsOf: searchURL),
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let results = json["results"] as? [[String: Any]],
+                  !results.isEmpty else {
+                continue
+            }
+            let match = results.first(where: {
+                let a = ($0["artistName"] as? String ?? "").lowercased()
+                return a.contains(artist.components(separatedBy: " ").first?.lowercased() ?? "")
+            }) ?? results.first
+            if let artworkStr = match?["artworkUrl100"] as? String {
+                let highRes = artworkStr.replacingOccurrences(of: "100x100bb", with: "600x600bb")
+                return URL(string: highRes)
+            }
+        }
+        return nil
+    }
+
+    func togglePlayPause() {
+        let script = """
+        tell application "System Events"
+          if (name of processes) does not contain "Music" then return
+        end tell
+        tell application "Music" to playpause
+        """
+        _ = try? runner.run(script)
+    }
+
+    func previousTrack() {
+        let script = """
+        tell application "System Events"
+          if (name of processes) does not contain "Music" then return
+        end tell
+        tell application "Music" to previous track
+        """
+        _ = try? runner.run(script)
+    }
+
+    func nextTrack() {
+        let script = """
+        tell application "System Events"
+          if (name of processes) does not contain "Music" then return
+        end tell
+        tell application "Music" to next track
         """
         _ = try? runner.run(script)
     }
@@ -333,8 +448,11 @@ final class NowPlayingService: ObservableObject {
     @Published private(set) var session: AudioSession? = nil
     @Published private(set) var artworkImage: NSImage? = nil
     @Published private(set) var waveformAccentColor: NSColor? = nil
+    @Published private(set) var availableSources: [AudioSession] = []
+    private var pinnedSource: NowPlayingSource? = nil
 
     private let spotify = SpotifyNowPlayingProvider()
+    private let appleMusic = AppleMusicNowPlayingProvider()
     private let chrome = ChromeNowPlayingProvider()
     private let mediaKeys = MediaKeySender()
     private var timer: Timer?
@@ -346,7 +464,28 @@ final class NowPlayingService: ObservableObject {
         stop()
         timer = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: true) { [weak self] _ in
             guard let self else { return }
-            let next = self.spotify.fetch() ?? self.chrome.fetchActiveTabTitle()
+            let spotifySession = self.spotify.fetch()
+            let appleMusicSession = self.appleMusic.fetch()
+            let chromeSession = self.chrome.fetchActiveTabTitle()
+
+            var sources: [AudioSession] = []
+            if let s = spotifySession { sources.append(s) }
+            if let a = appleMusicSession { sources.append(a) }
+            if let c = chromeSession { sources.append(c) }
+            self.availableSources = sources
+
+            let next: AudioSession?
+            if let pinned = self.pinnedSource,
+               let match = sources.first(where: { $0.source == pinned }) {
+                next = match
+            } else if let playing = sources.first(where: { $0.playback == .playing }) {
+                next = playing
+            } else if let current = self.session?.source,
+                      let match = sources.first(where: { $0.source == current }) {
+                next = match
+            } else {
+                next = sources.first
+            }
 
             if let next {
                 self.nilCycles = 0
@@ -372,10 +511,11 @@ final class NowPlayingService: ObservableObject {
 
     func togglePlayPauseIfSupported() {
         guard session?.canPlayPause == true else { return }
-        if session?.source == .chrome {
-            chrome.togglePlayPause()
-        } else {
-            mediaKeys.togglePlayPause()
+        switch session?.source {
+        case .chrome: chrome.togglePlayPause()
+        case .spotify: spotify.togglePlayPause()
+        case .appleMusic: appleMusic.togglePlayPause()
+        default: break
         }
         if var s = session {
             s.playback = (s.playback == .playing) ? .paused : .playing
@@ -384,20 +524,28 @@ final class NowPlayingService: ObservableObject {
     }
 
     func previousTrackIfSupported() {
-        guard session?.source == .spotify || session?.source == .chrome else { return }
-        if session?.source == .chrome {
-            chrome.previousTrack()
-        } else {
-            mediaKeys.previousTrack()
+        switch session?.source {
+        case .chrome: chrome.previousTrack()
+        case .spotify: spotify.previousTrack()
+        case .appleMusic: appleMusic.previousTrack()
+        default: break
         }
     }
 
     func nextTrackIfSupported() {
-        guard session?.source == .spotify || session?.source == .chrome else { return }
-        if session?.source == .chrome {
-            chrome.nextTrack()
-        } else {
-            mediaKeys.nextTrack()
+        switch session?.source {
+        case .chrome: chrome.nextTrack()
+        case .spotify: spotify.nextTrack()
+        case .appleMusic: appleMusic.nextTrack()
+        default: break
+        }
+    }
+
+    func switchSource(to source: NowPlayingSource) {
+        pinnedSource = source
+        if let match = availableSources.first(where: { $0.source == source }) {
+            session = match
+            refreshArtworkIfNeeded(for: match)
         }
     }
 
@@ -417,14 +565,11 @@ final class NowPlayingService: ObservableObject {
             guard let self else { return }
             do {
                 let (data, _) = try await URLSession.shared.data(from: urlCopy)
-                // Avoid setting an outdated image after rapid track changes.
                 guard self.currentArtworkURL == urlCopy else { return }
                 let image = NSImage(data: data)
                 self.artworkImage = image
                 self.waveformAccentColor = image.map(self.averageAccentColor(from:))
-            } catch {
-                // Keep existing UI fallback on failures.
-            }
+            } catch {}
         }
     }
 
@@ -682,27 +827,43 @@ struct NotificationsStackView: View {
     }
 }
 
-/// Chrome icon rendered from bundled `Resources/chrome.png`.
-/// Used in both the collapsed pill and expanded panel (when there's no album artwork).
-struct ChromeIconView: View {
+struct SourceIconView: View {
+    let source: NowPlayingSource
     let size: CGFloat
     let cornerRadius: CGFloat
-    let fallbackSystemName: String
+
+    private var resourceInfo: (name: String, ext: String)? {
+        switch source {
+        case .chrome: return ("chrome", "png")
+        case .spotify: return ("spotify", "png")
+        case .appleMusic: return ("applemusic", "jpg")
+        case .unknown: return nil
+        }
+    }
+
+    private var fallbackIcon: String {
+        switch source {
+        case .spotify: return "dot.radiowaves.left.and.right"
+        case .appleMusic: return "music.note"
+        case .chrome: return "globe"
+        case .unknown: return "music.note"
+        }
+    }
 
     var body: some View {
-        if let url = Bundle.module.url(forResource: "chrome", withExtension: "png"),
-           let chromeImg = NSImage(contentsOf: url) {
-            Image(nsImage: chromeImg)
+        if let info = resourceInfo,
+           let url = Bundle.module.url(forResource: info.name, withExtension: info.ext),
+           let img = NSImage(contentsOf: url) {
+            Image(nsImage: img)
                 .resizable()
                 .scaledToFit()
                 .frame(width: size, height: size)
-                .clipShape(
-                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                )
+                .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         } else {
-            Image(systemName: fallbackSystemName)
-                .font(.system(size: 12, weight: .semibold))
+            Image(systemName: fallbackIcon)
+                .font(.system(size: size * 0.55, weight: .semibold))
                 .foregroundStyle(.white.opacity(0.9))
+                .frame(width: size, height: size)
         }
     }
 }
@@ -790,18 +951,12 @@ struct IslandView: View {
                                 .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                                 .shadow(color: .black.opacity(0.25), radius: 8, y: 4)
                         } else {
-                            if isChrome {
-                                ZStack {
-                                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                        .fill(Color.white.opacity(0.06))
-                                    ChromeIconView(size: 28, cornerRadius: 10, fallbackSystemName: iconName)
-                                }
-                                .frame(width: 40, height: 40)
-                            } else {
+                            ZStack {
                                 RoundedRectangle(cornerRadius: 10, style: .continuous)
                                     .fill(Color.white.opacity(0.06))
-                                    .frame(width: 40, height: 40)
+                                SourceIconView(source: nowPlaying.session?.source ?? .unknown, size: 28, cornerRadius: 6)
                             }
+                            .frame(width: 40, height: 40)
                         }
 
                         Text(condensedNowPlayingLine)
@@ -811,7 +966,22 @@ struct IslandView: View {
 
                         Spacer(minLength: 0)
 
-                        let canUseMediaControls = (nowPlaying.session?.source == .spotify) || (nowPlaying.session?.source == .chrome)
+                        if nowPlaying.availableSources.count > 1 {
+                            let others = nowPlaying.availableSources.filter { $0.source != nowPlaying.session?.source }
+                            ForEach(others.indices, id: \.self) { idx in
+                                let other = others[idx]
+                                Button {
+                                    nowPlaying.switchSource(to: other.source)
+                                } label: {
+                                    SourceIconView(source: other.source, size: 20, cornerRadius: 4)
+                                }
+                                .frame(width: 28, height: 28)
+                                .background(Color.white.opacity(0.08))
+                                .clipShape(Circle())
+                            }
+                        }
+
+                        let canUseMediaControls = nowPlaying.session?.source == .spotify || nowPlaying.session?.source == .appleMusic || nowPlaying.session?.source == .chrome
 
                         if canUseMediaControls {
                             HStack(spacing: 8) {
@@ -889,13 +1059,7 @@ struct IslandView: View {
                                     .frame(width: 27, height: 27)
                                     .clipShape(Circle())
                             } else {
-                                if isChrome {
-                                    ChromeIconView(size: 22, cornerRadius: 999, fallbackSystemName: iconName)
-                                } else {
-                                    Image(systemName: iconName)
-                                        .font(.system(size: 12, weight: .semibold))
-                                        .foregroundStyle(.white.opacity(0.9))
-                                }
+                                SourceIconView(source: nowPlaying.session?.source ?? .unknown, size: 22, cornerRadius: 999)
                             }
                         }
                         .opacity(hasSession ? 1 : 0)
@@ -942,10 +1106,6 @@ struct IslandView: View {
         nowPlaying.session?.subtitle ?? "Spotify / Chrome"
     }
 
-    private var isChrome: Bool {
-        let subtitle = nowPlaying.session?.subtitle?.trimmingCharacters(in: .whitespacesAndNewlines)
-        return (nowPlaying.session?.source == .chrome) || (subtitle?.range(of: "Chrome", options: .caseInsensitive) != nil)
-    }
 
     private var condensedNowPlayingLine: String {
         let t = nowPlaying.session?.title ?? "Nothing playing"
@@ -954,20 +1114,10 @@ struct IslandView: View {
         if let artist = nowPlaying.session?.subtitle, !artist.isEmpty {
             parts.append(artist)
         }
-        if let album = nowPlaying.session?.album, !album.isEmpty {
-            parts.append(album)
-        }
 
         return parts.joined(separator: " • ")
     }
 
-    private var iconName: String {
-        switch nowPlaying.session?.source {
-        case .spotify: "dot.radiowaves.left.and.right"
-        case .chrome: "globe"
-        default: "music.note"
-        }
-    }
 }
 
 @MainActor
@@ -1033,7 +1183,8 @@ final class IslandPanelController {
 
         let nextFrame = topCenterFrame(size: targetSize, expanded: false)
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.28
+            context.duration = 0.3
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
             panel.animator().setFrame(nextFrame, display: true)
         }
     }
@@ -1055,7 +1206,8 @@ final class IslandPanelController {
 
         let nextFrame = topCenterFrame(size: targetSize, expanded: expanded)
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.22
+            context.duration = expanded ? 0.25 : 0.3
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
             panel.animator().setFrame(nextFrame, display: true)
         }
     }
@@ -1064,7 +1216,6 @@ final class IslandPanelController {
         guard let screen = NSScreen.main else { return panel.frame }
         let frame = screen.frame
         let x = frame.minX + (frame.width - size.width) / 2
-        // Nudge down so expanded sits below the notch while pill stays closer to original.
         let yNudge: CGFloat = expanded ? 50 : 0
         let y = frame.maxY - size.height - yNudge
         return NSRect(x: round(x), y: round(y), width: size.width, height: size.height)
@@ -1075,15 +1226,8 @@ final class IslandPanelController {
     }
 
     private func positionTopCenter() {
-        guard let screen = NSScreen.main else { return }
-        let frame = screen.frame
-        let size = panel.frame.size
-        let x = frame.minX + (frame.width - size.width) / 2
-        // Nudge down only while expanded so it sits below the menu-bar/notch region.
-        // Expanded sits much lower; collapsed pill should clear the notch a bit. Change 40 to 0 when fixed it
-        let yNudge: CGFloat = isExpanded ? 50 : 0
-        let y = frame.maxY - size.height - yNudge
-        panel.setFrameOrigin(NSPoint(x: round(x), y: round(y)))
+        let frame = topCenterFrame(size: panel.frame.size, expanded: isExpanded)
+        panel.setFrameOrigin(frame.origin)
     }
 }
 
@@ -1125,6 +1269,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .receive(on: RunLoop.main)
             .sink { [weak controller] session in
                 controller?.setHasSession(session != nil)
+            }
+            .store(in: &cancellables)
+
+        // Collapse when switching macOS desktop spaces.
+        NSWorkspace.shared.notificationCenter
+            .publisher(for: NSWorkspace.activeSpaceDidChangeNotification)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                guard let self, self.islandState.expanded else { return }
+                withAnimation(.spring(response: 0.28, dampingFraction: 0.85)) {
+                    self.islandState.expanded = false
+                }
             }
             .store(in: &cancellables)
 
