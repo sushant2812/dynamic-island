@@ -951,14 +951,14 @@ struct IslandView: View {
                         .opacity(hasSession ? 1 : 0)
                     }
                     .padding(.horizontal, hasSession ? 12 : 0)
-                    .frame(width: hasSession ? 315 : 170, height: hasSession ? 35 : 32)
+                    .frame(width: hasSession ? 315 : 170, height: hasSession ? 38 : 32)
                     .background(
-                        Capsule()
+                        RoundedRectangle(cornerRadius: 11, style: .continuous)
                             .fill(Color.black)
                             .matchedGeometryEffect(id: "pill", in: pillNamespace)
                     )
                     .overlay(
-                        Capsule()
+                        RoundedRectangle(cornerRadius: 11, style: .continuous)
                             .stroke(Color.white.opacity(hasSession ? 0.08 : 0.0), lineWidth: 1)
                     )
                     .shadow(color: .black.opacity(hasSession ? 0.35 : 0.0), radius: 18, y: 10)
@@ -1106,7 +1106,7 @@ final class IslandPanelController {
         let frame = screen.frame
         let x = frame.minX + (frame.width - size.width) / 2
         // Nudge down so expanded sits below the notch while pill stays closer to original.
-        let yNudge: CGFloat = expanded ? 50 : 4
+        let yNudge: CGFloat = expanded ? 50 : 0
         let y = frame.maxY - size.height - yNudge
         return NSRect(x: round(x), y: round(y), width: size.width, height: size.height)
     }
