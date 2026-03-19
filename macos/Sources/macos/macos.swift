@@ -147,18 +147,10 @@ final class SpotifyNowPlayingProvider {
         let album = (parts.count > 3 ? parts[3] : "").trimmingCharacters(in: .whitespacesAndNewlines)
         let artworkURLString = (parts.count > 4 ? parts[4] : "").trimmingCharacters(in: .whitespacesAndNewlines)
 
+        guard state == "playing" || state == "paused" else { return nil }
+        guard !title.isEmpty else { return nil }
+
         let playback: PlaybackState = (state == "playing") ? .playing : .paused
-        if title.isEmpty {
-            return AudioSession(
-                title: "Spotify",
-                subtitle: nil,
-                album: nil,
-                artworkURL: nil,
-                source: .spotify,
-                playback: playback,
-                canPlayPause: true
-            )
-        }
         let artworkURL = artworkURLString.isEmpty ? nil : URL(string: artworkURLString)
         return AudioSession(
             title: title,
@@ -205,6 +197,36 @@ final class SpotifyNowPlayingProvider {
 final class ChromeNowPlayingProvider {
     private let runner = AppleScriptRunner()
 
+    private let mediaJS = """
+    (function() {
+      var state = 'none', title = '', artist = '', artwork = '';
+      try {
+        var ms = navigator.mediaSession;
+        if (ms && ms.playbackState === 'playing') state = 'playing';
+        else if (ms && ms.playbackState === 'paused') state = 'paused';
+        if (ms && ms.metadata) {
+          title = ms.metadata.title || '';
+          artist = ms.metadata.artist || '';
+        }
+      } catch(e) {}
+      try {
+        var md = navigator.mediaSession && navigator.mediaSession.metadata;
+        if (md && md.artwork && md.artwork.length > 0) artwork = md.artwork[md.artwork.length - 1].src || '';
+      } catch(e) {}
+      if (state === 'none') {
+        var elems = document.querySelectorAll('video, audio');
+        for (var i = 0; i < elems.length; i++) {
+          var e = elems[i];
+          if (e.muted || e.volume === 0) continue;
+          if (!e.paused) { state = 'playing'; break; }
+        }
+      }
+      if (state === 'none' && title) state = 'paused';
+      if (!title) title = document.title || '';
+      return state + '||' + title + '||' + artist + '||' + artwork;
+    })();
+    """
+
     func fetchActiveTabTitle() -> AudioSession? {
         let script = """
         tell application "System Events"
@@ -212,18 +234,53 @@ final class ChromeNowPlayingProvider {
         end tell
         tell application "Google Chrome"
           if (count of windows) is 0 then return ""
-          set t to title of active tab of front window
-          return t
+          set jsCode to "\(mediaJS)"
+
+          set bestPaused to ""
+
+          -- 1. Try the active tab first (fast path for playing).
+          try
+            set jr to (execute active tab of front window javascript jsCode)
+            if jr starts with "playing" then return jr
+            if jr starts with "paused" and bestPaused is "" then set bestPaused to jr
+          end try
+
+          -- 2. Scan background tabs on known media domains.
+          --    A "playing" tab always wins; otherwise keep first "paused".
+          repeat with t in tabs of front window
+            set tURL to URL of t
+            if tURL contains "open.spotify.com" or tURL contains "youtube.com" or tURL contains "music.youtube.com" or tURL contains "netflix.com" or tURL contains "twitch.tv" or tURL contains "soundcloud.com" then
+              try
+                set jr to (execute t javascript jsCode)
+                if jr starts with "playing" then return jr
+                if bestPaused is "" and jr starts with "paused" then set bestPaused to jr
+              end try
+            end if
+          end repeat
+
+          return bestPaused
         end tell
         """
 
-         guard let _ = try? runner.run(script).trimmingCharacters(in: .whitespacesAndNewlines) else { return nil }
+        guard let result = try? runner.run(script).trimmingCharacters(in: .whitespacesAndNewlines),
+              !result.isEmpty else { return nil }
+
+        let parts = result.components(separatedBy: "||")
+        let state = parts.first ?? "none"
+        guard state == "playing" || state == "paused" else { return nil }
+
+        let title = (parts.count > 1 ? parts[1] : "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let artist = (parts.count > 2 ? parts[2] : "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let artworkStr = (parts.count > 3 ? parts[3] : "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let artworkURL = artworkStr.isEmpty ? nil : URL(string: artworkStr)
+        let playback: PlaybackState = (state == "playing") ? .playing : .paused
 
         return AudioSession(
-            title: "Chrome",
-            subtitle: nil,
+            title: title.isEmpty ? "Chrome" : title,
+            subtitle: artist.isEmpty ? nil : artist,
+            artworkURL: artworkURL,
             source: .chrome,
-            playback: .playing,
+            playback: playback,
             canPlayPause: true
         )
     }
@@ -339,21 +396,28 @@ final class NowPlayingService: ObservableObject {
     private let mediaKeys = MediaKeySender()
     private var timer: Timer?
     private var currentArtworkURL: URL? = nil
+    private var nilCycles = 0
+    private let nilGrace = 8 // keep session alive for 8 × 0.6 s ≈ 4.8 s during track transitions
 
     func start() {
         stop()
         timer = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: true) { [weak self] _ in
             guard let self else { return }
             let next = self.spotify.fetch() ?? self.chrome.fetchActiveTabTitle()
-            if next != self.session {
-                self.session = next
-                if let next {
+
+            if let next {
+                self.nilCycles = 0
+                if next != self.session {
+                    self.session = next
                     self.refreshArtworkIfNeeded(for: next)
-                } else {
-                    self.currentArtworkURL = nil
-                    self.artworkImage = nil
-                    self.waveformAccentColor = nil
                 }
+            } else if self.session != nil {
+                self.nilCycles += 1
+                guard self.nilCycles >= self.nilGrace else { return }
+                self.session = nil
+                self.currentArtworkURL = nil
+                self.artworkImage = nil
+                self.waveformAccentColor = nil
             }
         }
     }
@@ -379,7 +443,7 @@ final class NowPlayingService: ObservableObject {
     }
 
     private func refreshArtworkIfNeeded(for session: AudioSession) {
-        guard session.source == .spotify, let url = session.artworkURL else {
+        guard let url = session.artworkURL else {
             currentArtworkURL = nil
             artworkImage = nil
             waveformAccentColor = nil
@@ -846,20 +910,20 @@ struct IslandView: View {
                 .shadow(color: .black.opacity(0.28), radius: 18, y: 10)
                 .transition(.opacity.combined(with: .move(edge: .top)))
             } else {
+                let hasSession = nowPlaying.session != nil
+
                 Button {
+                    guard hasSession else { return }
                     withAnimation(.spring(response: 0.28, dampingFraction: 0.85)) {
                         islandState.expanded = true
                     }
                 } label: {
                     HStack(spacing: 10) {
-                        // Left: current app / source icon
                         ZStack {
                             Circle()
                                 .fill(Color.white.opacity(0.16))
                                 .frame(width: 27, height: 27)
-                            if let album = nowPlaying.session?.album,
-                               !album.isEmpty,
-                               let img = nowPlaying.artworkImage {
+                            if let img = nowPlaying.artworkImage {
                                 Image(nsImage: img)
                                     .resizable()
                                     .scaledToFill()
@@ -875,28 +939,29 @@ struct IslandView: View {
                                 }
                             }
                         }
+                        .opacity(hasSession ? 1 : 0)
 
                         Spacer(minLength: 0)
 
-                        // Right: soundwaves indicator
                         SoundVisualizerView(
                             audioLevel: audioMonitor.audioLevel,
                             baseColor: Color(nsColor: nowPlaying.waveformAccentColor ?? .white)
                         )
-                            .frame(width: 70, height: 16, alignment: .trailing)
+                        .frame(width: 70, height: 16, alignment: .trailing)
+                        .opacity(hasSession ? 1 : 0)
                     }
-                    .padding(.horizontal, 12)
-                    .frame(width: 315, height: 35)
+                    .padding(.horizontal, hasSession ? 12 : 0)
+                    .frame(width: hasSession ? 315 : 170, height: hasSession ? 35 : 32)
                     .background(
                         Capsule()
-                            .fill(Color.black.opacity(0.92))
+                            .fill(Color.black)
                             .matchedGeometryEffect(id: "pill", in: pillNamespace)
                     )
                     .overlay(
                         Capsule()
-                            .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                            .stroke(Color.white.opacity(hasSession ? 0.08 : 0.0), lineWidth: 1)
                     )
-                    .shadow(color: .black.opacity(0.35), radius: 18, y: 10)
+                    .shadow(color: .black.opacity(hasSession ? 0.35 : 0.0), radius: 18, y: 10)
                 }
                 .buttonStyle(.plain)
                 .transition(.opacity.combined(with: .move(edge: .top)))
@@ -907,6 +972,7 @@ struct IslandView: View {
         .padding(.top, 0)
         .background(Color.clear)
         .animation(.spring(response: 0.28, dampingFraction: 0.85), value: islandState.expanded)
+        .animation(.spring(response: 0.35, dampingFraction: 0.8), value: nowPlaying.session != nil)
     }
 
     private var title: String {
@@ -951,6 +1017,7 @@ final class IslandPanelController {
     private var isClickThroughEnabled = false
     private let hosting: PassthroughHostingView<AnyView>
     private(set) var isExpanded: Bool = false
+    private(set) var hasSession: Bool = false
 
     init(rootView: some View) {
         hosting = PassthroughHostingView(rootView: AnyView(rootView))
@@ -996,15 +1063,36 @@ final class IslandPanelController {
         if panel.isVisible { hide() } else { show() }
     }
 
-    func setExpanded(_ expanded: Bool) {
-        // Keep the window as small as possible so it doesn't block clicks in other apps,
-        // while animating the size/position for a smoother pill <-> expanded transition.
-        isExpanded = expanded
-        hosting.hitTestBandHeight = expanded ? 160 : 72
+    func setHasSession(_ value: Bool) {
+        hasSession = value
+        guard !isExpanded else { return }
 
-        let targetSize = expanded
-        ? NSSize(width: 520, height: 120)
-        : NSSize(width: 380, height: 56)
+        let targetSize = value
+            ? NSSize(width: 380, height: 56)
+            : NSSize(width: 200, height: 44)
+        hosting.hitTestBandHeight = value ? 72 : 44
+
+        let nextFrame = topCenterFrame(size: targetSize, expanded: false)
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.28
+            panel.animator().setFrame(nextFrame, display: true)
+        }
+    }
+
+    func setExpanded(_ expanded: Bool) {
+        isExpanded = expanded
+
+        let targetSize: NSSize
+        if expanded {
+            hosting.hitTestBandHeight = 160
+            targetSize = NSSize(width: 520, height: 120)
+        } else if hasSession {
+            hosting.hitTestBandHeight = 72
+            targetSize = NSSize(width: 380, height: 56)
+        } else {
+            hosting.hitTestBandHeight = 44
+            targetSize = NSSize(width: 200, height: 44)
+        }
 
         let nextFrame = topCenterFrame(size: targetSize, expanded: expanded)
         NSAnimationContext.runAnimationGroup { context in
@@ -1070,6 +1158,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .receive(on: RunLoop.main)
             .sink { [weak controller] expanded in
                 controller?.setExpanded(expanded)
+            }
+            .store(in: &cancellables)
+
+        // Shrink the panel to notch size when no audio session is active.
+        nowPlaying.$session
+            .receive(on: RunLoop.main)
+            .sink { [weak controller] session in
+                controller?.setHasSession(session != nil)
             }
             .store(in: &cancellables)
 
