@@ -7,9 +7,6 @@ final class AppleMusicNowPlayingProvider {
 
     func fetch() -> AudioSession? {
         let script = """
-        tell application "System Events"
-          if (name of processes) does not contain "Music" then return ""
-        end tell
         tell application "Music"
           if player state is stopped then return ""
           set pState to "playing"

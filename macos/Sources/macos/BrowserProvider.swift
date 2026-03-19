@@ -1,8 +1,18 @@
 import Foundation
 
-final class ChromeNowPlayingProvider {
+final class BrowserProvider {
     private let runner = AppleScriptRunner()
     private(set) var mediaTabURL: String?
+
+    let browserName: String
+    let processName: String
+
+    init(browserName: String, processName: String? = nil) {
+        self.browserName = browserName
+        self.processName = processName ?? browserName
+    }
+
+    var source: NowPlayingSource { .browser(name: browserName) }
 
     private let mediaJS = """
     (function() {
@@ -49,29 +59,35 @@ final class ChromeNowPlayingProvider {
     })();
     """
 
-    func fetchActiveTabTitle() -> AudioSession? {
+    private static let mediaDomains = [
+        "open.spotify.com", "youtube.com", "music.youtube.com",
+        "netflix.com", "twitch.tv", "soundcloud.com",
+        "music.apple.com", "pandora.com", "tidal.com",
+        "deezer.com", "amazon.com/music", "primevideo.com",
+        "disneyplus.com", "hulu.com", "hbomax.com",
+    ]
+
+    func fetch() -> AudioSession? {
+        let domainChecks = Self.mediaDomains
+            .map { "tURL contains \"\($0)\"" }
+            .joined(separator: " or ")
+
         let script = """
-        tell application "System Events"
-          if (name of processes) does not contain "Google Chrome" then return ""
-        end tell
-        tell application "Google Chrome"
+        tell application "\(browserName)"
           if (count of windows) is 0 then return ""
           set jsCode to "\(mediaJS)"
 
           set bestPaused to ""
 
-          -- 1. Try the active tab first (fast path for playing).
           try
             set jr to (execute active tab of front window javascript jsCode)
             if jr starts with "playing" then return jr
             if jr starts with "paused" and bestPaused is "" then set bestPaused to jr
           end try
 
-          -- 2. Scan background tabs on known media domains.
-          --    A "playing" tab always wins; otherwise keep first "paused".
           repeat with t in tabs of front window
             set tURL to URL of t
-            if tURL contains "open.spotify.com" or tURL contains "youtube.com" or tURL contains "music.youtube.com" or tURL contains "netflix.com" or tURL contains "twitch.tv" or tURL contains "soundcloud.com" then
+            if \(domainChecks) then
               try
                 set jr to (execute t javascript jsCode)
                 if jr starts with "playing" then return jr
@@ -101,10 +117,10 @@ final class ChromeNowPlayingProvider {
         if !tabURL.isEmpty { mediaTabURL = tabURL }
 
         return AudioSession(
-            title: title.isEmpty ? "Chrome" : title,
+            title: title.isEmpty ? browserName : title,
             subtitle: artist.isEmpty ? nil : artist,
             artworkURL: artworkURL,
-            source: .chrome,
+            source: source,
             playback: playback,
             canPlayPause: true
         )
@@ -118,7 +134,7 @@ final class ChromeNowPlayingProvider {
     private func runOnMediaTab(js: String) {
         guard let domain = mediaTabDomain else { return }
         let script = """
-        tell application "Google Chrome"
+        tell application "\(browserName)"
           if (count of windows) is 0 then return
           repeat with w in windows
             repeat with t in tabs of w

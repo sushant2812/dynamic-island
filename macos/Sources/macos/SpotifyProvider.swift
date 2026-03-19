@@ -5,9 +5,6 @@ final class SpotifyNowPlayingProvider {
 
     func fetch() -> AudioSession? {
         let script = """
-        tell application "System Events"
-          if (name of processes) does not contain "Spotify" then return ""
-        end tell
         tell application "Spotify"
           set pState to player state as string
           set tName to ""

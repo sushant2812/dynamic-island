@@ -3,10 +3,10 @@ import Foundation
 import Combine
 import SwiftUI
 
-enum NowPlayingSource: String {
+enum NowPlayingSource: Equatable {
     case spotify
     case appleMusic
-    case chrome
+    case browser(name: String)
     case unknown
 }
 

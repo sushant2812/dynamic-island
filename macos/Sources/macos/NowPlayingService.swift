@@ -12,25 +12,50 @@ final class NowPlayingService: ObservableObject {
 
     private let spotify = SpotifyNowPlayingProvider()
     private let appleMusic = AppleMusicNowPlayingProvider()
-    private let chrome = ChromeNowPlayingProvider()
+    private let browsers: [BrowserProvider] = [
+        BrowserProvider(browserName: "Google Chrome"),
+        BrowserProvider(browserName: "Arc"),
+        BrowserProvider(browserName: "Brave Browser"),
+        BrowserProvider(browserName: "Microsoft Edge"),
+        BrowserProvider(browserName: "Vivaldi"),
+        BrowserProvider(browserName: "Opera"),
+    ]
     private let mediaKeys = MediaKeySender()
     private var timer: Timer?
     private var currentArtworkURL: URL? = nil
     private var nilCycles = 0
     private let nilGrace = 1
 
+    private let processChecker = AppleScriptRunner()
+
+    private func browserProvider(for source: NowPlayingSource) -> BrowserProvider? {
+        guard case .browser(let name) = source else { return nil }
+        return browsers.first { $0.browserName == name }
+    }
+
+    private func runningProcessNames() -> Set<String> {
+        let script = """
+        tell application "System Events"
+          set pNames to name of every process
+          set AppleScript's text item delimiters to "||"
+          return pNames as text
+        end tell
+        """
+        guard let raw = try? processChecker.run(script) else { return [] }
+        return Set(raw.components(separatedBy: "||").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) })
+    }
+
     func start() {
         stop()
         timer = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: true) { [weak self] _ in
             guard let self else { return }
-            let spotifySession = self.spotify.fetch()
-            let appleMusicSession = self.appleMusic.fetch()
-            let chromeSession = self.chrome.fetchActiveTabTitle()
-
+            let running = self.runningProcessNames()
             var sources: [AudioSession] = []
-            if let s = spotifySession { sources.append(s) }
-            if let a = appleMusicSession { sources.append(a) }
-            if let c = chromeSession { sources.append(c) }
+            if running.contains("Spotify"), let s = self.spotify.fetch() { sources.append(s) }
+            if running.contains("Music"), let a = self.appleMusic.fetch() { sources.append(a) }
+            for browser in self.browsers where running.contains(browser.processName) {
+                if let b = browser.fetch() { sources.append(b) }
+            }
             self.availableSources = sources
 
             let next: AudioSession?
@@ -69,12 +94,12 @@ final class NowPlayingService: ObservableObject {
     }
 
     func togglePlayPauseIfSupported() {
-        guard session?.canPlayPause == true else { return }
-        switch session?.source {
-        case .chrome: chrome.togglePlayPause()
+        guard session?.canPlayPause == true, let source = session?.source else { return }
+        switch source {
         case .spotify: spotify.togglePlayPause()
         case .appleMusic: appleMusic.togglePlayPause()
-        default: break
+        case .browser: browserProvider(for: source)?.togglePlayPause()
+        case .unknown: break
         }
         if var s = session {
             s.playback = (s.playback == .playing) ? .paused : .playing
@@ -83,20 +108,22 @@ final class NowPlayingService: ObservableObject {
     }
 
     func previousTrackIfSupported() {
-        switch session?.source {
-        case .chrome: chrome.previousTrack()
+        guard let source = session?.source else { return }
+        switch source {
         case .spotify: spotify.previousTrack()
         case .appleMusic: appleMusic.previousTrack()
-        default: break
+        case .browser: browserProvider(for: source)?.previousTrack()
+        case .unknown: break
         }
     }
 
     func nextTrackIfSupported() {
-        switch session?.source {
-        case .chrome: chrome.nextTrack()
+        guard let source = session?.source else { return }
+        switch source {
         case .spotify: spotify.nextTrack()
         case .appleMusic: appleMusic.nextTrack()
-        default: break
+        case .browser: browserProvider(for: source)?.nextTrack()
+        case .unknown: break
         }
     }
 

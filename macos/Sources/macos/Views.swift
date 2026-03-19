@@ -7,10 +7,11 @@ struct SourceIconView: View {
 
     private var resourceInfo: (name: String, ext: String)? {
         switch source {
-        case .chrome: return ("chrome", "png")
+        case .browser(let name) where name == "Google Chrome":
+            return ("chrome", "png")
         case .spotify: return ("spotify", "png")
         case .appleMusic: return ("applemusic", "jpg")
-        case .unknown: return nil
+        default: return nil
         }
     }
 
@@ -18,7 +19,7 @@ struct SourceIconView: View {
         switch source {
         case .spotify: return "dot.radiowaves.left.and.right"
         case .appleMusic: return "music.note"
-        case .chrome: return "globe"
+        case .browser: return "globe"
         case .unknown: return "music.note"
         }
     }
@@ -229,9 +230,13 @@ struct IslandView: View {
 
     @ViewBuilder
     private var mediaControls: some View {
+        let isBrowser: Bool = {
+            if case .browser = nowPlaying.session?.source { return true }
+            return false
+        }()
         let canUse = nowPlaying.session?.source == .spotify
             || nowPlaying.session?.source == .appleMusic
-            || nowPlaying.session?.source == .chrome
+            || isBrowser
 
         if canUse {
             HStack(spacing: 8) {
