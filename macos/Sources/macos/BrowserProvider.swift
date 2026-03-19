@@ -30,21 +30,41 @@ final class BrowserProvider {
         var md = navigator.mediaSession && navigator.mediaSession.metadata;
         if (md && md.artwork && md.artwork.length > 0) artwork = md.artwork[md.artwork.length - 1].src || '';
       } catch(e) {}
-      if (state === 'none') {
-        var elems = document.querySelectorAll('video, audio');
+      var elems = document.querySelectorAll('video, audio');
+      try {
+        window.__dynIslandMedia = window.__dynIslandMedia || {};
+        var store = window.__dynIslandMedia;
+        var now = Date.now();
+
+        var maxCt = 0;
+        var audibleAtMax = false;
+
         for (var i = 0; i < elems.length; i++) {
           var e = elems[i];
-          if (e.muted || e.volume === 0) continue;
-          if (!e.paused && e.currentTime > 0) { state = 'playing'; break; }
-        }
-        if (state === 'none') {
-          for (var j = 0; j < elems.length; j++) {
-            var el = elems[j];
-            if (!el.paused && el.currentTime > 0) { state = 'playing'; break; }
-            if (el.paused && el.currentTime > 0) { state = 'paused'; break; }
+          var ct = e && e.currentTime;
+          if (ct == null) continue;
+          ct = Number(ct) || 0;
+          if (ct <= 0) continue;
+
+          var audible = !(e.muted || e.volume === 0);
+          if (ct > maxCt) {
+            maxCt = ct;
+            audibleAtMax = audible;
           }
         }
-      }
+
+        var prevMain = store.__main;
+        store.__main = { ct: maxCt, t: now };
+
+        if (prevMain && maxCt > 0 && audibleAtMax) {
+          var delta = maxCt - prevMain.ct;
+          var dt = now - prevMain.t;
+          if (dt < 20000 && delta > 0.02) { state = 'playing'; }
+          else if (state === 'none') { state = 'paused'; }
+        } else if (state === 'none' && maxCt > 0) {
+          state = 'paused';
+        }
+      } catch (e) {}
       if (state === 'none' && location.host === 'open.spotify.com') {
         var btn = document.querySelector('[data-testid=control-button-playpause]');
         if (btn) {
@@ -81,19 +101,22 @@ final class BrowserProvider {
 
           try
             set jr to (execute active tab of front window javascript jsCode)
-            if jr starts with "playing" then return jr
-            if jr starts with "paused" and bestPaused is "" then set bestPaused to jr
+            if jr contains "playing||" then return jr
+            if jr contains "paused||" and bestPaused is "" then set bestPaused to jr
           end try
 
+          set scanned to 0
           repeat with t in tabs of front window
             set tURL to URL of t
             if \(domainChecks) then
               try
                 set jr to (execute t javascript jsCode)
-                if jr starts with "playing" then return jr
-                if bestPaused is "" and jr starts with "paused" then set bestPaused to jr
+                if jr contains "playing||" then return jr
+                if bestPaused is "" and jr contains "paused||" then set bestPaused to jr
               end try
             end if
+            set scanned to scanned + 1
+            if scanned > 6 then exit repeat
           end repeat
 
           return bestPaused
@@ -104,13 +127,17 @@ final class BrowserProvider {
               !result.isEmpty else { return nil }
 
         let parts = result.components(separatedBy: "||")
-        let state = parts.first ?? "none"
+        let trimQuotes: (String) -> String = { s in
+            s.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+        }
+
+        let state = trimQuotes(parts.first ?? "none")
         guard state == "playing" || state == "paused" else { return nil }
 
-        let title = (parts.count > 1 ? parts[1] : "").trimmingCharacters(in: .whitespacesAndNewlines)
-        let artist = (parts.count > 2 ? parts[2] : "").trimmingCharacters(in: .whitespacesAndNewlines)
-        let artworkStr = (parts.count > 3 ? parts[3] : "").trimmingCharacters(in: .whitespacesAndNewlines)
-        let tabURL = (parts.count > 4 ? parts[4] : "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let title = (parts.count > 1 ? trimQuotes(parts[1]) : "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let artist = (parts.count > 2 ? trimQuotes(parts[2]) : "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let artworkStr = (parts.count > 3 ? trimQuotes(parts[3]) : "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let tabURL = (parts.count > 4 ? trimQuotes(parts[4]) : "").trimmingCharacters(in: .whitespacesAndNewlines)
         let artworkURL = artworkStr.isEmpty ? nil : URL(string: artworkStr)
         let playback: PlaybackState = (state == "playing") ? .playing : .paused
 
@@ -124,6 +151,30 @@ final class BrowserProvider {
             playback: playback,
             canPlayPause: true
         )
+    }
+
+    /// Runs `fetch()` on a background thread and waits up to `timeout` seconds.
+    /// If the browser automation hangs, we return `(nil, true)` and let callers skip it.
+    func fetchWithTimeout(_ timeout: TimeInterval) -> (AudioSession?, Bool) {
+        let semaphore = DispatchSemaphore(value: 0)
+        let lock = NSLock()
+        var result: AudioSession? = nil
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            let r = self.fetch()
+            lock.lock()
+            result = r
+            lock.unlock()
+            semaphore.signal()
+        }
+
+        let didTimeout = semaphore.wait(timeout: .now() + timeout) == .timedOut
+        if didTimeout { return (nil, true) }
+
+        lock.lock()
+        let r = result
+        lock.unlock()
+        return (r, false)
     }
 
     private var mediaTabDomain: String? {

@@ -26,6 +26,9 @@ final class NowPlayingService: ObservableObject {
     private var nilCycles = 0
     private let nilGrace = 1
 
+    private var isPolling = false
+    private var browserTimeoutCooldownUntil: [String: Date] = [:]
+
     private let processChecker = AppleScriptRunner()
 
     private func browserProvider(for source: NowPlayingSource) -> BrowserProvider? {
@@ -45,45 +48,112 @@ final class NowPlayingService: ObservableObject {
         return Set(raw.components(separatedBy: "||").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) })
     }
 
+    private func fetchWithTimeout<T>(_ timeout: TimeInterval, _ work: @escaping () -> T?) -> (T?, Bool) {
+        let semaphore = DispatchSemaphore(value: 0)
+        let lock = NSLock()
+        var result: T? = nil
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            let r = work()
+            lock.lock()
+            result = r
+            lock.unlock()
+            semaphore.signal()
+        }
+
+        let didTimeout = semaphore.wait(timeout: .now() + timeout) == .timedOut
+        if didTimeout { return (nil, true) }
+
+        lock.lock()
+        let r = result
+        lock.unlock()
+        return (r, false)
+    }
+
     func start() {
         stop()
         timer = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: true) { [weak self] _ in
             guard let self else { return }
+            guard !self.isPolling else { return }
+
+            self.isPolling = true
             let running = self.runningProcessNames()
-            var sources: [AudioSession] = []
-            if running.contains("Spotify"), let s = self.spotify.fetch() { sources.append(s) }
-            if running.contains("Music"), let a = self.appleMusic.fetch() { sources.append(a) }
-            for browser in self.browsers where running.contains(browser.processName) {
-                if let b = browser.fetch() { sources.append(b) }
-            }
-            self.availableSources = sources
+            let cooldownSnapshot = self.browserTimeoutCooldownUntil
+            let now = Date()
 
-            let next: AudioSession?
-            if let pinned = self.pinnedSource,
-               let match = sources.first(where: { $0.source == pinned }) {
-                next = match
-            } else if let playing = sources.first(where: { $0.playback == .playing }) {
-                next = playing
-            } else if let current = self.session?.source,
-                      let match = sources.first(where: { $0.source == current }) {
-                next = match
-            } else {
-                next = sources.first
-            }
+            let spotifyProvider = self.spotify
+            let appleMusicProvider = self.appleMusic
+            let browsers = self.browsers
 
-            if let next {
-                self.nilCycles = 0
-                if next != self.session {
-                    self.session = next
-                    self.refreshArtworkIfNeeded(for: next)
+            DispatchQueue.global(qos: .userInitiated).async {
+                var sources: [AudioSession] = []
+                var timedOutBrowsers: [String] = []
+
+                if running.contains("Spotify") {
+                    let (s, _) = self.fetchWithTimeout(0.45) { spotifyProvider.fetch() }
+                    if let s { sources.append(s) }
                 }
-            } else if self.session != nil {
-                self.nilCycles += 1
-                guard self.nilCycles >= self.nilGrace else { return }
-                self.session = nil
-                self.currentArtworkURL = nil
-                self.artworkImage = nil
-                self.waveformAccentColor = nil
+                if running.contains("Music") {
+                    let (a, _) = self.fetchWithTimeout(0.45) { appleMusicProvider.fetch() }
+                    if let a { sources.append(a) }
+                }
+
+                for browser in browsers where running.contains(browser.processName) {
+                    if let until = cooldownSnapshot[browser.browserName], until > now {
+                        continue
+                    }
+
+                    let (session, didTimeout) = browser.fetchWithTimeout(0.7)
+                    if didTimeout {
+                        timedOutBrowsers.append(browser.browserName)
+                        continue
+                    }
+                    if let session {
+                        sources.append(session)
+                    }
+                }
+
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { return }
+
+                    self.availableSources = sources
+
+                    let next: AudioSession?
+                    if let pinned = self.pinnedSource,
+                       let match = sources.first(where: { $0.source == pinned }) {
+                        next = match
+                    } else if let playing = sources.first(where: { $0.playback == .playing }) {
+                        next = playing
+                    } else if let current = self.session?.source,
+                              let match = sources.first(where: { $0.source == current }) {
+                        next = match
+                    } else {
+                        next = sources.first
+                    }
+
+                    if let next {
+                        self.nilCycles = 0
+                        if next != self.session {
+                            self.session = next
+                            self.refreshArtworkIfNeeded(for: next)
+                        }
+                    } else if self.session != nil {
+                        self.nilCycles += 1
+                        if self.nilCycles >= self.nilGrace {
+                            self.session = nil
+                            self.currentArtworkURL = nil
+                            self.artworkImage = nil
+                            self.waveformAccentColor = nil
+                        }
+                    }
+
+                    let cooldownSeconds: TimeInterval = 12
+                    for name in timedOutBrowsers {
+                        self.browserTimeoutCooldownUntil[name] = Date().addingTimeInterval(cooldownSeconds)
+                    }
+
+                    self.isPolling = false
+                }
             }
         }
     }
