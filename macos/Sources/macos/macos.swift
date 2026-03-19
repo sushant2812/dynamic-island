@@ -196,6 +196,7 @@ final class SpotifyNowPlayingProvider {
 
 final class ChromeNowPlayingProvider {
     private let runner = AppleScriptRunner()
+    private(set) var mediaTabURL: String?
 
     private let mediaJS = """
     (function() {
@@ -223,7 +224,7 @@ final class ChromeNowPlayingProvider {
       }
       if (state === 'none' && title) state = 'paused';
       if (!title) title = document.title || '';
-      return state + '||' + title + '||' + artist + '||' + artwork;
+      return state + '||' + title + '||' + artist + '||' + artwork + '||' + location.href;
     })();
     """
 
@@ -272,8 +273,11 @@ final class ChromeNowPlayingProvider {
         let title = (parts.count > 1 ? parts[1] : "").trimmingCharacters(in: .whitespacesAndNewlines)
         let artist = (parts.count > 2 ? parts[2] : "").trimmingCharacters(in: .whitespacesAndNewlines)
         let artworkStr = (parts.count > 3 ? parts[3] : "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let tabURL = (parts.count > 4 ? parts[4] : "").trimmingCharacters(in: .whitespacesAndNewlines)
         let artworkURL = artworkStr.isEmpty ? nil : URL(string: artworkStr)
         let playback: PlaybackState = (state == "playing") ? .playing : .paused
+
+        if !tabURL.isEmpty { mediaTabURL = tabURL }
 
         return AudioSession(
             title: title.isEmpty ? "Chrome" : title,
@@ -285,103 +289,42 @@ final class ChromeNowPlayingProvider {
         )
     }
 
-    func togglePlayPause() {
+    private var mediaTabDomain: String? {
+        guard let url = mediaTabURL, let host = URL(string: url)?.host else { return nil }
+        return host
+    }
+
+    private func runOnMediaTab(js: String) {
+        guard let domain = mediaTabDomain else { return }
         let script = """
         tell application "Google Chrome"
           if (count of windows) is 0 then return
-          tell active tab of front window
-            execute javascript "
-              (function() {
-                try {
-                  var isSpotify = (location.href || '').indexOf('open.spotify.com') !== -1;
-                  if (isSpotify) {
-                    // Use Spotify web hotkey: Space = play/pause
-                    window.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', code: 'Space', bubbles: true }));
-                    window.dispatchEvent(new KeyboardEvent('keyup', { key: ' ', code: 'Space', bubbles: true }));
-                    return 'space_dispatched';
-                  }
-
-                  // Generic fallback: toggle first <video>/<audio>.
-                  var m = document.querySelector('video, audio');
-                  if (!m) { return 'no_media'; }
-                  if (m.paused) { m.play(); return 'play'; }
-                  m.pause(); return 'pause';
-                } catch (e) {
-                  return 'error';
-                }
-              })();
-            "
-          end tell
+          repeat with w in windows
+            repeat with t in tabs of w
+              if URL of t contains "\(domain)" then
+                execute t javascript "\(js)"
+                return "ok"
+              end if
+            end repeat
+          end repeat
         end tell
-        return \"ok\"
         """
         _ = try? runner.run(script)
+    }
+
+    func togglePlayPause() {
+        let js = "(function(){try{var bs=document.querySelectorAll('button');for(var i=0;i<bs.length;i++){var l=(bs[i].getAttribute('aria-label')||'').toLowerCase();if(l==='play'||l==='pause'){bs[i].click();return 'ok'}};var m=document.querySelector('video,audio');if(m){if(m.paused){m.play()}else{m.pause()};return 'media'};return 'none'}catch(e){return 'err'}})()"
+        runOnMediaTab(js: js)
     }
 
     func previousTrack() {
-        let script = """
-        tell application "Google Chrome"
-          if (count of windows) is 0 then return
-          tell active tab of front window
-            execute javascript "
-              (function() {
-                try {
-                  var isSpotify = (location.href || '').indexOf('open.spotify.com') !== -1;
-                  if (isSpotify) {
-                    // Spotify web hotkey: Up Arrow = previous track
-                    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', code: 'ArrowUp', bubbles: true }));
-                    window.dispatchEvent(new KeyboardEvent('keyup', { key: 'ArrowUp', code: 'ArrowUp', bubbles: true }));
-                    return 'prev_key';
-                  }
-
-                  // Generic fallback: seek back 10 seconds.
-                  var m = document.querySelector('video, audio');
-                  if (!m) { return 'no_media'; }
-                  m.currentTime = Math.max(0, m.currentTime - 10);
-                  return 'back';
-                } catch (e) {
-                  return 'error';
-                }
-              })();
-            "
-          end tell
-        end tell
-        return \"ok\"
-        """
-        _ = try? runner.run(script)
+        let js = "(function(){try{var bs=document.querySelectorAll('button');for(var i=0;i<bs.length;i++){var l=(bs[i].getAttribute('aria-label')||'').toLowerCase();if(l==='previous'||l==='skip back'){bs[i].click();return 'ok'}};var m=document.querySelector('video,audio');if(m){m.currentTime=Math.max(0,m.currentTime-10);return 'seek'};return 'none'}catch(e){return 'err'}})()"
+        runOnMediaTab(js: js)
     }
 
     func nextTrack() {
-        let script = """
-        tell application "Google Chrome"
-          if (count of windows) is 0 then return
-          tell active tab of front window
-            execute javascript "
-              (function() {
-                try {
-                  var isSpotify = (location.href || '').indexOf('open.spotify.com') !== -1;
-                  if (isSpotify) {
-                    // Spotify web hotkey: Down Arrow = next track
-                    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', code: 'ArrowDown', bubbles: true }));
-                    window.dispatchEvent(new KeyboardEvent('keyup', { key: 'ArrowDown', code: 'ArrowDown', bubbles: true }));
-                    return 'next_key';
-                  }
-
-                  // Generic fallback: seek forward 10 seconds.
-                  var m = document.querySelector('video, audio');
-                  if (!m) { return 'no_media'; }
-                  m.currentTime = m.currentTime + 10;
-                  return 'forward';
-                } catch (e) {
-                  return 'error';
-                }
-              })();
-            "
-          end tell
-        end tell
-        return \"ok\"
-        """
-        _ = try? runner.run(script)
+        let js = "(function(){try{var bs=document.querySelectorAll('button');for(var i=0;i<bs.length;i++){var l=(bs[i].getAttribute('aria-label')||'').toLowerCase();if(l==='next'||l==='skip forward'){bs[i].click();return 'ok'}};var m=document.querySelector('video,audio');if(m){m.currentTime=m.currentTime+10;return 'seek'};return 'none'}catch(e){return 'err'}})()"
+        runOnMediaTab(js: js)
     }
 }
 
@@ -397,7 +340,7 @@ final class NowPlayingService: ObservableObject {
     private var timer: Timer?
     private var currentArtworkURL: URL? = nil
     private var nilCycles = 0
-    private let nilGrace = 8 // keep session alive for 8 × 0.6 s ≈ 4.8 s during track transitions
+    private let nilGrace = 1 // keep session alive for 8 × 0.6 s ≈ 4.8 s during track transitions
 
     func start() {
         stop()
@@ -429,17 +372,33 @@ final class NowPlayingService: ObservableObject {
 
     func togglePlayPauseIfSupported() {
         guard session?.canPlayPause == true else { return }
-        mediaKeys.togglePlayPause()
+        if session?.source == .chrome {
+            chrome.togglePlayPause()
+        } else {
+            mediaKeys.togglePlayPause()
+        }
+        if var s = session {
+            s.playback = (s.playback == .playing) ? .paused : .playing
+            session = s
+        }
     }
 
     func previousTrackIfSupported() {
         guard session?.source == .spotify || session?.source == .chrome else { return }
-        mediaKeys.previousTrack()
+        if session?.source == .chrome {
+            chrome.previousTrack()
+        } else {
+            mediaKeys.previousTrack()
+        }
     }
 
     func nextTrackIfSupported() {
         guard session?.source == .spotify || session?.source == .chrome else { return }
-        mediaKeys.nextTrack()
+        if session?.source == .chrome {
+            chrome.nextTrack()
+        } else {
+            mediaKeys.nextTrack()
+        }
     }
 
     private func refreshArtworkIfNeeded(for session: AudioSession) {
@@ -871,7 +830,7 @@ struct IslandView: View {
                                 Button {
                                     nowPlaying.togglePlayPauseIfSupported()
                                 } label: {
-                                    Image(systemName: (nowPlaying.session?.playback == .playing) ? "pause.fill" : "play.fill")
+                                    Image(systemName: "play.fill")
                                         .font(.system(size: 16, weight: .semibold))
                                         .foregroundStyle(.white.opacity(0.92))
                                 }
