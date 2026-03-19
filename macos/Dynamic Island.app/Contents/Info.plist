@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>Dynamic Island</string>
+    <key>CFBundleDisplayName</key>
+    <string>Dynamic Island</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.sushant.dynamicisland</string>
+    <key>CFBundleVersion</key>
+    <string>1.0</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleExecutable</key>
+    <string>macos</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>13.0</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>Dynamic Island needs screen capture access to monitor system audio levels for the sound visualizer.</string>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>Dynamic Island uses AppleScript to detect and control media playback in Spotify, Apple Music, and Chrome.</string>
+</dict>
+</plist>
