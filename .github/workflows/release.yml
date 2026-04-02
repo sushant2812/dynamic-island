@@ -21,11 +21,19 @@ jobs:
       - name: Build release app bundle
         run: bash macos/build-app.sh
 
-      - name: Upload Dynamic Island.app
+      # Zip on the same macOS runner so the .app bundle stays valid. Uploading the raw .app
+      # directory as an artifact can strip the outer *.app folder (only Contents/ arrives).
+      - name: Zip app bundle for artifact
+        run: |
+          set -euo pipefail
+          ditto -c -k --sequesterRsrc --keepParent "macos/Dynamic Island.app" DynamicIsland-macos.zip
+          ls -la DynamicIsland-macos.zip
+
+      - name: Upload built zip
         uses: actions/upload-artifact@v4
         with:
           name: Dynamic-Island-app
-          path: "macos/Dynamic Island.app"
+          path: DynamicIsland-macos.zip
           if-no-files-found: error
 
   release:
@@ -38,17 +46,14 @@ jobs:
           name: Dynamic-Island-app
           path: ./artifact
 
-      - name: Zip app bundle
+      - name: Prepare release asset
         run: |
-          if [ -d "./artifact/Dynamic Island.app" ]; then
-            APP_PATH="./artifact/Dynamic Island.app"
-          else
-            APP_PATH=$(find ./artifact -name "*.app" -type d -maxdepth 5 | head -1)
+          set -euo pipefail
+          ZIP=$(find ./artifact -name "*.zip" -type f -print | head -1)
+          if [ -z "$ZIP" ]; then
+            echo "No zip under ./artifact"; ls -laR ./artifact; exit 1
           fi
-          if [ -z "$APP_PATH" ] || [ ! -d "$APP_PATH" ]; then
-            echo "Could not find .app under ./artifact"; ls -laR ./artifact; exit 1
-          fi
-          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" DynamicIsland-macos.zip
+          cp "$ZIP" DynamicIsland-macos.zip
           ls -la DynamicIsland-macos.zip
 
       - name: Publish GitHub Release
