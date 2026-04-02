@@ -3,15 +3,10 @@
 
 name: macOS app build
 on:
-  push:
-    branches: [main]
-    paths:
-      - "macos/**"
-      - ".github/workflows/macos-build.yml"
   pull_request:
     paths:
       - "macos/**"
-      - ".github/workflows/macos-build.yml"
+      - ".github/workflows/swift.yml"
   workflow_dispatch:
 jobs:
   build:

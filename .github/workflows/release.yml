@@ -1,0 +1,66 @@
+name: Release macOS app
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "macos/**"
+      - ".github/workflows/release.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build release app bundle
+        run: bash macos/build-app.sh
+
+      - name: Upload Dynamic Island.app
+        uses: actions/upload-artifact@v4
+        with:
+          name: Dynamic-Island-app
+          path: "macos/Dynamic Island.app"
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: macos-latest
+    steps:
+      - name: Download built app
+        uses: actions/download-artifact@v4
+        with:
+          name: Dynamic-Island-app
+          path: ./artifact
+
+      - name: Zip app bundle
+        run: |
+          if [ -d "./artifact/Dynamic Island.app" ]; then
+            APP_PATH="./artifact/Dynamic Island.app"
+          else
+            APP_PATH=$(find ./artifact -name "*.app" -type d -maxdepth 5 | head -1)
+          fi
+          if [ -z "$APP_PATH" ] || [ ! -d "$APP_PATH" ]; then
+            echo "Could not find .app under ./artifact"; ls -laR ./artifact; exit 1
+          fi
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" DynamicIsland-macos.zip
+          ls -la DynamicIsland-macos.zip
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_id }}
+          name: "Dynamic Island build ${{ github.run_number }}"
+          body: |
+            Automated build from [`${{ github.sha }}`](https://github.com/${{ github.repository }}/commit/${{ github.sha }}).
+
+            Download **DynamicIsland-macos.zip**, unzip, and move **Dynamic Island.app** to `/Applications` (or open it from anywhere).
+          files: DynamicIsland-macos.zip
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
