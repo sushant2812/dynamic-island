@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import Combine
+import CoreAudio
 
 @MainActor
 final class NowPlayingService: ObservableObject {
@@ -8,6 +9,7 @@ final class NowPlayingService: ObservableObject {
     @Published private(set) var artworkImage: NSImage? = nil
     @Published private(set) var waveformAccentColor: NSColor? = nil
     @Published private(set) var availableSources: [AudioSession] = []
+    @Published private(set) var outputDevices: [AudioOutputDevice] = []
     private var pinnedSource: NowPlayingSource? = nil
 
     private let spotify = SpotifyNowPlayingProvider()
@@ -30,6 +32,8 @@ final class NowPlayingService: ObservableObject {
     private var browserTimeoutCooldownUntil: [String: Date] = [:]
 
     private let processChecker = AppleScriptRunner()
+    private let outputDeviceService = AudioOutputDeviceService()
+    private var lastOutputRefreshAt = Date.distantPast
 
     private func browserProvider(for source: NowPlayingSource) -> BrowserProvider? {
         guard case .browser(let name) = source else { return nil }
@@ -72,9 +76,16 @@ final class NowPlayingService: ObservableObject {
 
     func start() {
         stop()
+        refreshOutputDevices()
+        lastOutputRefreshAt = Date()
         timer = Timer.scheduledTimer(withTimeInterval: 0.35, repeats: true) { [weak self] _ in
             guard let self else { return }
             guard !self.isPolling else { return }
+
+            if Date().timeIntervalSince(self.lastOutputRefreshAt) >= 2.0 {
+                self.refreshOutputDevices()
+                self.lastOutputRefreshAt = Date()
+            }
 
             self.isPolling = true
             let running = self.runningProcessNames()
@@ -224,6 +235,15 @@ final class NowPlayingService: ObservableObject {
             session = match
             refreshArtworkIfNeeded(for: match)
         }
+    }
+
+    func switchOutputDevice(to deviceID: AudioDeviceID) {
+        guard outputDeviceService.setDefaultOutputDevice(deviceID) else { return }
+        refreshOutputDevices()
+    }
+
+    private func refreshOutputDevices() {
+        outputDevices = outputDeviceService.fetchOutputDevices()
     }
 
     private func refreshArtworkIfNeeded(for session: AudioSession) {

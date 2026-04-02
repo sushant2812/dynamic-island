@@ -173,6 +173,7 @@ struct IslandView: View {
 
                 Spacer(minLength: 0)
 
+                outputDeviceMenu
                 sourceSwitchButtons
                 mediaControls
             }
@@ -209,6 +210,42 @@ struct IslandView: View {
                 SourceIconView(source: nowPlaying.session?.source ?? .unknown, size: 28, cornerRadius: 6)
             }
             .frame(width: 40, height: 40)
+        }
+    }
+
+    @ViewBuilder
+    private var outputDeviceMenu: some View {
+        if !nowPlaying.outputDevices.isEmpty {
+            Menu {
+                ForEach(nowPlaying.outputDevices) { device in
+                    Button {
+                        nowPlaying.switchOutputDevice(to: device.id)
+                    } label: {
+                        HStack(spacing: 8) {
+                            if device.isDefault {
+                                Image(systemName: "checkmark")
+                            }
+                            Text(device.name)
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "speaker.wave.2.fill")
+                        .font(.system(size: 11, weight: .semibold))
+                    Text(defaultOutputDeviceName)
+                        .font(.system(size: 11, weight: .semibold))
+                        .lineLimit(1)
+                        .frame(maxWidth: 135, alignment: .leading)
+                }
+                .foregroundStyle(.white.opacity(0.92))
+                .padding(.horizontal, 10)
+                .frame(height: 28)
+                .background(Color.white.opacity(0.08))
+                .clipShape(Capsule())
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize(horizontal: true, vertical: true)
         }
     }
 
@@ -343,5 +380,9 @@ struct IslandView: View {
             parts.append(artist)
         }
         return parts.joined(separator: " • ")
+    }
+
+    private var defaultOutputDeviceName: String {
+        nowPlaying.outputDevices.first(where: \.isDefault)?.name ?? "Output"
     }
 }

@@ -2,6 +2,7 @@ import AppKit
 import Foundation
 import Combine
 import SwiftUI
+import CoreAudio
 
 enum NowPlayingSource: Equatable {
     case spotify
@@ -23,6 +24,12 @@ struct AudioSession: Equatable {
     var source: NowPlayingSource
     var playback: PlaybackState
     var canPlayPause: Bool
+}
+
+struct AudioOutputDevice: Identifiable, Equatable {
+    let id: AudioDeviceID
+    let name: String
+    let isDefault: Bool
 }
 
 enum ScriptError: Error {
@@ -84,6 +91,153 @@ final class MediaKeySender {
 
     func previousTrack() {
         postAuxKey(NXKey.previous.rawValue)
+    }
+}
+
+final class AudioOutputDeviceService {
+    func fetchOutputDevices() -> [AudioOutputDevice] {
+        let defaultDeviceID = getDefaultOutputDeviceID()
+        let ids = getAllDeviceIDs()
+        var devices: [AudioOutputDevice] = []
+
+        for id in ids where isOutputDevice(id) {
+            let name = getDeviceName(id) ?? "Unknown Output"
+            devices.append(AudioOutputDevice(id: id, name: name, isDefault: id == defaultDeviceID))
+        }
+
+        return devices.sorted {
+            if $0.isDefault != $1.isDefault { return $0.isDefault }
+            return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+        }
+    }
+
+    func setDefaultOutputDevice(_ deviceID: AudioDeviceID) -> Bool {
+        var id = deviceID
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        let size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        let outputStatus = AudioObjectSetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject),
+            &address,
+            0,
+            nil,
+            size,
+            &id
+        )
+
+        var systemAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultSystemOutputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        let systemStatus = AudioObjectSetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject),
+            &systemAddress,
+            0,
+            nil,
+            size,
+            &id
+        )
+
+        return outputStatus == noErr || systemStatus == noErr
+    }
+
+    private func getDefaultOutputDeviceID() -> AudioDeviceID {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var deviceID = AudioDeviceID(0)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+
+        let status = AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject),
+            &address,
+            0,
+            nil,
+            &size,
+            &deviceID
+        )
+
+        return status == noErr ? deviceID : 0
+    }
+
+    private func getAllDeviceIDs() -> [AudioDeviceID] {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDevices,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(
+            AudioObjectID(kAudioObjectSystemObject),
+            &address,
+            0,
+            nil,
+            &size
+        ) == noErr else {
+            return []
+        }
+
+        let count = Int(size) / MemoryLayout<AudioDeviceID>.size
+        var ids = Array(repeating: AudioDeviceID(0), count: count)
+        guard AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject),
+            &address,
+            0,
+            nil,
+            &size,
+            &ids
+        ) == noErr else {
+            return []
+        }
+
+        return ids
+    }
+
+    private func isOutputDevice(_ id: AudioDeviceID) -> Bool {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyStreamConfiguration,
+            mScope: kAudioDevicePropertyScopeOutput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(id, &address, 0, nil, &size) == noErr else {
+            return false
+        }
+
+        let rawPointer = UnsafeMutableRawPointer.allocate(
+            byteCount: Int(size),
+            alignment: MemoryLayout<AudioBufferList>.alignment
+        )
+        defer { rawPointer.deallocate() }
+        let bufferList = rawPointer.assumingMemoryBound(to: AudioBufferList.self)
+
+        guard AudioObjectGetPropertyData(id, &address, 0, nil, &size, bufferList) == noErr else {
+            return false
+        }
+
+        let buffers = UnsafeMutableAudioBufferListPointer(bufferList)
+        return buffers.contains { $0.mNumberChannels > 0 }
+    }
+
+    private func getDeviceName(_ id: AudioDeviceID) -> String? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioObjectPropertyName,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var size = UInt32(MemoryLayout<CFString>.size)
+        var cfName: CFString = "" as CFString
+        let status = AudioObjectGetPropertyData(id, &address, 0, nil, &size, &cfName)
+        guard status == noErr else { return nil }
+        return cfName as String
     }
 }
 
