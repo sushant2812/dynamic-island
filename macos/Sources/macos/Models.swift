@@ -4,20 +4,38 @@ import Combine
 import SwiftUI
 import CoreAudio
 
-enum NowPlayingSource: Equatable {
+/// Holds a `Sendable` result across a background `DispatchQueue` hop without mutating a captured `var`.
+final class SendableResultBox<T: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: T?
+
+    func set(_ v: T?) {
+        lock.lock()
+        value = v
+        lock.unlock()
+    }
+
+    func take() -> T? {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
+}
+
+enum NowPlayingSource: Equatable, Sendable {
     case spotify
     case appleMusic
     case browser(name: String)
     case unknown
 }
 
-enum PlaybackState: String {
+enum PlaybackState: String, Sendable {
     case idle
     case playing
     case paused
 }
 
-struct AudioSession: Equatable {
+struct AudioSession: Equatable, Sendable {
     var title: String
     var subtitle: String?
     var artworkURL: URL?

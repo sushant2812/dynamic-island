@@ -1,6 +1,6 @@
 import Foundation
 
-final class AppleMusicNowPlayingProvider {
+final class AppleMusicNowPlayingProvider: @unchecked Sendable {
     private let runner = AppleScriptRunner()
     private var lastArtworkTrack: String?
     private var cachedArtworkURL: URL?

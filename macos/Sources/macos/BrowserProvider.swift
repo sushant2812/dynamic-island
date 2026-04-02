@@ -1,6 +1,6 @@
 import Foundation
 
-final class BrowserProvider {
+final class BrowserProvider: @unchecked Sendable {
     private let runner = AppleScriptRunner()
     private(set) var mediaTabURL: String?
 
@@ -157,24 +157,17 @@ final class BrowserProvider {
     /// If the browser automation hangs, we return `(nil, true)` and let callers skip it.
     func fetchWithTimeout(_ timeout: TimeInterval) -> (AudioSession?, Bool) {
         let semaphore = DispatchSemaphore(value: 0)
-        let lock = NSLock()
-        var result: AudioSession? = nil
+        let box = SendableResultBox<AudioSession>()
 
-        DispatchQueue.global(qos: .userInitiated).async {
-            let r = self.fetch()
-            lock.lock()
-            result = r
-            lock.unlock()
+        DispatchQueue.global(qos: .userInitiated).async { [self] in
+            box.set(self.fetch())
             semaphore.signal()
         }
 
         let didTimeout = semaphore.wait(timeout: .now() + timeout) == .timedOut
         if didTimeout { return (nil, true) }
 
-        lock.lock()
-        let r = result
-        lock.unlock()
-        return (r, false)
+        return (box.take(), false)
     }
 
     private var mediaTabDomain: String? {

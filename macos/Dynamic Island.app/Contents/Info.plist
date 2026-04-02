@@ -21,8 +21,6 @@
     <string>13.0</string>
     <key>LSUIElement</key>
     <true/>
-    <key>NSScreenCaptureUsageDescription</key>
-    <string>Dynamic Island needs screen capture access to monitor system audio levels for the sound visualizer.</string>
     <key>NSAppleEventsUsageDescription</key>
     <string>Dynamic Island uses AppleScript to detect and control media playback in Spotify, Apple Music, and Chrome.</string>
 </dict>

@@ -1,6 +1,6 @@
 import Foundation
 
-final class SpotifyNowPlayingProvider {
+final class SpotifyNowPlayingProvider: @unchecked Sendable {
     private let runner = AppleScriptRunner()
 
     func fetch() -> AudioSession? {
