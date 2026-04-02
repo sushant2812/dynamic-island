@@ -50,8 +50,8 @@ swift build
 
 ## Screenshots
 
-![Collapsed island](<assets/screenshots/Screenshot 2026-04-02 at 11.59.07 AM.png>)
-![Expanded island](<assets/screenshots/Screenshot 2026-04-02 at 11.59.18 AM.png>)
+![Collapsed island](<assets/screenshots/island-collapsed.png>)
+![Expanded island](<assets/screenshots/island-expanded.png>)
 
 ## Permissions notes
 
