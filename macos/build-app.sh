@@ -54,6 +54,9 @@ PLIST
 
 SPM_BUNDLE="$BUILD_DIR/${EXECUTABLE}_macos.bundle"
 if [ -d "$SPM_BUNDLE" ]; then
+    # SPM's resource_bundle_accessor looks for <AppName.app>/macos_macos.bundle (sibling of Contents).
+    # Only placing the bundle under Contents/MacOS breaks Bundle.module at runtime.
+    cp -R "$SPM_BUNDLE" "$APP_DIR/"
     cp -R "$SPM_BUNDLE" "$MACOS_DIR/"
 fi
 
