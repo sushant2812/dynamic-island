@@ -72,7 +72,7 @@ final class NowPlayingService: ObservableObject {
 
     func start() {
         stop()
-        timer = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: true) { [weak self] _ in
+        timer = Timer.scheduledTimer(withTimeInterval: 0.35, repeats: true) { [weak self] _ in
             guard let self else { return }
             guard !self.isPolling else { return }
 
@@ -88,13 +88,15 @@ final class NowPlayingService: ObservableObject {
             DispatchQueue.global(qos: .userInitiated).async {
                 var sources: [AudioSession] = []
                 var timedOutBrowsers: [String] = []
+                let isCurrentSpotify = self.session?.source == .spotify
+                let isCurrentAppleMusic = self.session?.source == .appleMusic
 
                 if running.contains("Spotify") {
-                    let (s, _) = self.fetchWithTimeout(0.45) { spotifyProvider.fetch() }
+                    let (s, _) = self.fetchWithTimeout(isCurrentSpotify ? 0.25 : 0.2) { spotifyProvider.fetch() }
                     if let s { sources.append(s) }
                 }
                 if running.contains("Music") {
-                    let (a, _) = self.fetchWithTimeout(0.45) { appleMusicProvider.fetch() }
+                    let (a, _) = self.fetchWithTimeout(isCurrentAppleMusic ? 0.25 : 0.2) { appleMusicProvider.fetch() }
                     if let a { sources.append(a) }
                 }
 
@@ -103,7 +105,11 @@ final class NowPlayingService: ObservableObject {
                         continue
                     }
 
-                    let (session, didTimeout) = browser.fetchWithTimeout(0.7)
+                    let isCurrentBrowser = {
+                        if case .browser(let name) = self.session?.source { return name == browser.browserName }
+                        return false
+                    }()
+                    let (session, didTimeout) = browser.fetchWithTimeout(isCurrentBrowser ? 0.35 : 0.22)
                     if didTimeout {
                         timedOutBrowsers.append(browser.browserName)
                         continue
@@ -147,7 +153,7 @@ final class NowPlayingService: ObservableObject {
                         }
                     }
 
-                    let cooldownSeconds: TimeInterval = 12
+                    let cooldownSeconds: TimeInterval = 6
                     for name in timedOutBrowsers {
                         self.browserTimeoutCooldownUntil[name] = Date().addingTimeInterval(cooldownSeconds)
                     }
@@ -168,7 +174,12 @@ final class NowPlayingService: ObservableObject {
         switch source {
         case .spotify: spotify.togglePlayPause()
         case .appleMusic: appleMusic.togglePlayPause()
-        case .browser: browserProvider(for: source)?.togglePlayPause()
+        case .browser:
+            if let provider = browserProvider(for: source) {
+                DispatchQueue.global(qos: .userInitiated).async {
+                    provider.togglePlayPause()
+                }
+            }
         case .unknown: break
         }
         if var s = session {
@@ -182,7 +193,12 @@ final class NowPlayingService: ObservableObject {
         switch source {
         case .spotify: spotify.previousTrack()
         case .appleMusic: appleMusic.previousTrack()
-        case .browser: browserProvider(for: source)?.previousTrack()
+        case .browser:
+            if let provider = browserProvider(for: source) {
+                DispatchQueue.global(qos: .userInitiated).async {
+                    provider.previousTrack()
+                }
+            }
         case .unknown: break
         }
     }
@@ -192,7 +208,12 @@ final class NowPlayingService: ObservableObject {
         switch source {
         case .spotify: spotify.nextTrack()
         case .appleMusic: appleMusic.nextTrack()
-        case .browser: browserProvider(for: source)?.nextTrack()
+        case .browser:
+            if let provider = browserProvider(for: source) {
+                DispatchQueue.global(qos: .userInitiated).async {
+                    provider.nextTrack()
+                }
+            }
         case .unknown: break
         }
     }

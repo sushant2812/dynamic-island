@@ -9,6 +9,8 @@ struct SourceIconView: View {
         switch source {
         case .browser(let name) where name == "Google Chrome":
             return ("chrome", "png")
+        case .browser(let name) where name == "Arc":
+            return ("arc", "png")
         case .spotify: return ("spotify", "png")
         case .appleMusic: return ("applemusic", "jpg")
         default: return nil

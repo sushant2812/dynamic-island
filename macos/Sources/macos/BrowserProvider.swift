@@ -201,7 +201,7 @@ final class BrowserProvider {
     }
 
     func togglePlayPause() {
-        let js = "(function(){try{var vs=document.querySelectorAll('video');for(var i=0;i<vs.length;i++){var v=vs[i];if(!v.muted&&v.volume>0&&v.currentTime>0){if(v.paused){v.play()}else{v.pause()};return 'media'}};var bs=document.querySelectorAll('button');for(var i=0;i<bs.length;i++){var l=(bs[i].getAttribute('aria-label')||'').toLowerCase();if(l.indexOf('pause')===0||l.indexOf('play')===0){bs[i].click();return 'ok'}};var m=document.querySelector('video,audio');if(m){if(m.paused){m.play()}else{m.pause()};return 'media'};return 'none'}catch(e){return 'err'}})()"
+        let js = "(function(){try{var host=(location.host||'').toLowerCase();if(host.indexOf('youtube.com')!==-1){var y=document.querySelector('.ytp-play-button');if(y){y.click();return 'yt'}}if(host.indexOf('open.spotify.com')!==-1){var s=document.querySelector('[data-testid=control-button-playpause]');if(s){s.click();return 'sp'}};var bs=document.querySelectorAll('button');for(var i=0;i<bs.length;i++){var l=(bs[i].getAttribute('aria-label')||'').toLowerCase();if(l.indexOf('pause')===0||l.indexOf('play')===0){bs[i].click();return 'btn'}};var m=document.querySelector('video,audio');if(m){if(m.paused){var p=m.play();if(p&&p.catch){p.catch(function(){})}}else{m.pause()};return 'media'};return 'none'}catch(e){return 'err'}})()"
         runOnMediaTab(js: js)
     }
 
